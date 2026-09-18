@@ -1092,9 +1092,7 @@ mod test {
     #[tokio::test]
     async fn gpu_performance_level() {
         let test = start().await.expect("start");
-        let driver = gpu_performance_level_driver()
-            .await
-            .unwrap();
+        let driver = gpu_performance_level_driver().await.unwrap();
 
         let name = test.connection.unique_name().unwrap();
         let proxy = GpuPerformanceLevelProxy::new(&test.connection, name.clone())
