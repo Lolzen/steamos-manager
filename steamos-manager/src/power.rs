@@ -33,6 +33,7 @@ use zbus::names::OwnedBusName;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, ObjectServer, fdo};
 
+use crate::daemon::is_root;
 use crate::error::{to_zbus_error, to_zbus_fdo_error};
 use crate::gpu::AMDGPU_HWMON_NAME;
 use crate::hardware::{
@@ -813,6 +814,7 @@ pub(crate) struct AcpiPlatformProfileDriver {
 pub(crate) struct CustomPlatformProfileDriver {
     profiles: HashMap<String, CustomPerformanceProfile>,
     current_profile: Option<String>,
+    proxy: Option<RootManagerProxy<'static>>,
 }
 
 #[async_trait]
@@ -864,9 +866,16 @@ impl CustomPlatformProfileDriver {
         profiles: &HashMap<String, CustomPerformanceProfile>,
         current_profile: Option<String>,
     ) -> Result<Self> {
+        let proxy = if !is_root() {
+            let connection = system_connection().await?;
+            Some(RootManagerProxy::new(&connection).await?)
+        } else {
+            None
+        };
         Ok(Self {
             profiles: profiles.clone(),
             current_profile,
+            proxy,
         })
     }
 }
@@ -878,10 +887,13 @@ impl PlatformProfileDriver for CustomPlatformProfileDriver {
     }
 
     async fn get_platform_profile(&self) -> Result<String> {
-        Ok(self
-            .current_profile
-            .clone()
-            .ok_or(anyhow!("No profile is currently set"))?)
+        Ok(if let Some(proxy) = self.proxy.as_ref() {
+            proxy.performance_profile().await?
+        } else {
+            self.current_profile
+                .clone()
+                .ok_or(anyhow!("No profile is currently set"))?
+        })
     }
 
     async fn set_platform_profile(&mut self, profile: &str) -> Result<()> {

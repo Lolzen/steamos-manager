@@ -883,7 +883,10 @@ impl PerformanceProfile1 {
         #[zbus(connection)] connection: &Connection,
         #[zbus(signal_emitter)] ctx: SignalEmitter<'_>,
     ) -> zbus::Result<()> {
-        let _: () = self.proxy.call("SetPerformanceProfile", &(profile)).await?;
+        let _: () = self
+            .proxy
+            .set_property("PerformanceProfile", &(profile))
+            .await?;
         self.performance_profile_changed(&ctx).await?;
         let connection = connection.clone();
         if let Some(manager) = self.tdp_limit_manager.as_ref() {
