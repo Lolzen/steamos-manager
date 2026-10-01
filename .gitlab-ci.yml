@@ -4,7 +4,7 @@ stages:
 
 image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/archlinux:base-devel
 
-test:
+test-x86_64:
   stage: test
   tags:
     - x86_64-linux-kvm-docker
@@ -16,6 +16,15 @@ test:
       coverage_report:
         coverage_format: cobertura
         path: cobertura.xml
+
+test-aarch64:
+  stage: test
+  image: registry.gitlab.steamos.cloud/holo/holo-core-aarch64-preview/base-devel
+  tags:
+    - aarch64-linux-docker
+  script:
+    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
+    - dbus-run-session cargo test
 
 workflow:
   rules:
@@ -31,10 +40,20 @@ fmt:
     - pacman -Syu --noconfirm --needed rust
     - cargo fmt --check
 
-clippy:
+clippy-x86_64:
   stage: test
   tags:
     - x86_64-linux-kvm-docker
+  script:
+    - pacman -Syu --noconfirm --needed rust clang speech-dispatcher
+    - cargo clippy -- -Dwarnings
+    - cargo clippy --tests -- -Dwarnings
+
+clippy-aarch64:
+  stage: test
+  image: registry.gitlab.steamos.cloud/holo/holo-core-aarch64-preview/base-devel
+  tags:
+    - aarch64-linux-docker
   script:
     - pacman -Syu --noconfirm --needed rust clang speech-dispatcher
     - cargo clippy -- -Dwarnings
@@ -52,10 +71,23 @@ proxy:
     - git diff
     - git diff-index --quiet HEAD
 
-build:
+build-x86_64:
   stage: deploy
   tags:
     - x86_64-linux-kvm-docker
+  script:
+    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
+    - make install DESTDIR=build
+    - tar --zstd -C build -cvf build.tar.zst .
+  artifacts:
+    paths:
+      - build.tar.zst
+
+build-aarch64:
+  stage: deploy
+  image: registry.gitlab.steamos.cloud/holo/holo-core-aarch64-preview/base-devel
+  tags:
+    - aarch64-linux-docker
   script:
     - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
     - make install DESTDIR=build
