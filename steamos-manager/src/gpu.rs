@@ -24,11 +24,13 @@ use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
 
+use crate::daemon::is_root;
 use crate::hardware::{GpuPerformanceDriverConfig, device_config, device_type};
+use crate::manager::root::RootManagerProxy;
 use crate::power::find_hwmon;
 #[cfg(test)]
 use crate::testing;
-use crate::{ArcMutexBox, path, write_synced};
+use crate::{ArcMutexBox, path, system_connection, write_synced};
 
 pub(crate) const AMDGPU_HWMON_NAME: &str = "amdgpu";
 
@@ -239,6 +241,7 @@ struct DevfreqGpuPerformanceLevelDriver {
     sysfs_path: PathBuf,
     available_freqs: Vec<u64>,
     level: DevfreqPerformanceLevel,
+    proxy: Option<RootManagerProxy<'static>>,
 }
 
 #[async_trait]
@@ -760,6 +763,12 @@ impl DevfreqGpuPerformanceLevelDriver {
         let available_freqs = fs::read_to_string(sysfs_path.join(Self::AVAILABLE_FREQ))
             .await
             .map_err(|message| anyhow!("Error opening sysfs file for reading: {message}"))?;
+        let proxy = if !is_root() {
+            let connection = system_connection().await?;
+            Some(RootManagerProxy::new(&connection).await?)
+        } else {
+            None
+        };
         Ok(Self {
             sysfs_path: sysfs_path.clone(),
             available_freqs: available_freqs
@@ -768,6 +777,7 @@ impl DevfreqGpuPerformanceLevelDriver {
                 .sorted()
                 .collect(),
             level: DevfreqPerformanceLevel::Auto,
+            proxy,
         })
     }
 
@@ -804,7 +814,11 @@ impl GpuPerformanceLevelDriver for DevfreqGpuPerformanceLevelDriver {
     }
 
     async fn get_performance_level(&self) -> Result<GpuPerformanceLevel> {
-        Ok(GpuPerformanceLevel::Devfreq(self.level))
+        Ok(if let Some(proxy) = self.proxy.as_ref() {
+            self.performance_level_from_str(proxy.gpu_performance_level().await?.as_str())?
+        } else {
+            GpuPerformanceLevel::Devfreq(self.level)
+        })
     }
 
     async fn set_performance_level(&mut self, level: GpuPerformanceLevel) -> Result<()> {
@@ -875,6 +889,7 @@ impl GpuPerformanceLevelDriver for DevfreqGpuPerformanceLevelDriver {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
+    use crate::daemon::set_root;
     use crate::hardware::test::fake_model;
     use crate::hardware::{DeviceConfig, GpuPerformanceConfig, SteamDeckVariant};
     use crate::power::HWMON_PREFIX;
@@ -965,6 +980,7 @@ pub(crate) mod test {
             })
             .await;
         create_dir_all(&sysfs_path).await?;
+        set_root(true);
 
         write(
             sysfs_path.join(DevfreqGpuPerformanceLevelDriver::AVAILABLE_FREQ),

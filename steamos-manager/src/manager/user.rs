@@ -542,7 +542,10 @@ impl GpuPerformanceLevel1 {
             debug!("set GpuPerformanceLevel: discarding out of order serial");
             return Ok(());
         }
-        let _: () = self.proxy.call("SetGpuPerformanceLevel", &(level)).await?;
+        let _: () = self
+            .proxy
+            .set_property("GpuPerformanceLevel", &(level))
+            .await?;
         Ok(self.gpu_performance_level_changed(&ctx).await?)
     }
 
