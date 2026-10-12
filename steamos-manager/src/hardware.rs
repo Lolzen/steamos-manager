@@ -128,6 +128,8 @@ pub(crate) struct BatteryChargeLimitConfig {
 #[derive(Clone, Deserialize, Debug)]
 pub(crate) struct CustomPerformanceProfile {
     pub cpufreq: Vec<CpuFreqRange>,
+    #[serde(default)]
+    pub gpu_performance_level: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Debug)]

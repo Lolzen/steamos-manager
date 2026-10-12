@@ -35,7 +35,9 @@ use zbus::{Connection, ObjectServer, fdo};
 
 use crate::daemon::is_root;
 use crate::error::{to_zbus_error, to_zbus_fdo_error};
-use crate::gpu::AMDGPU_HWMON_NAME;
+use crate::gpu::{
+    AMDGPU_HWMON_NAME, GpuPerformanceLevel, GpuPerformanceLevelDriver, gpu_performance_level_driver,
+};
 use crate::hardware::{
     CustomPerformanceProfile, FanControlState, OptionalRangeConfig, PlatformProfileDriverConfig,
     device_config,
@@ -815,6 +817,8 @@ pub(crate) struct CustomPlatformProfileDriver {
     profiles: HashMap<String, CustomPerformanceProfile>,
     current_profile: Option<String>,
     proxy: Option<RootManagerProxy<'static>>,
+    gpu_performance_level_driver: Option<ArcMutexBox<dyn GpuPerformanceLevelDriver>>,
+    saved_gpu_performance_level: Option<GpuPerformanceLevel>,
 }
 
 #[async_trait]
@@ -876,6 +880,8 @@ impl CustomPlatformProfileDriver {
             profiles: profiles.clone(),
             current_profile,
             proxy,
+            gpu_performance_level_driver: gpu_performance_level_driver().await.ok(),
+            saved_gpu_performance_level: None,
         })
     }
 }
@@ -902,6 +908,19 @@ impl PlatformProfileDriver for CustomPlatformProfileDriver {
         };
         for cpufreq in &profile_info.cpufreq {
             cpufreq.write_sysfs_contents().await?;
+        }
+        if let Some(driver) = &self.gpu_performance_level_driver {
+            let mut driver = driver.lock().await;
+            if let Some(new_level) = profile_info.gpu_performance_level.as_ref() {
+                let new_level = driver.performance_level_from_str(new_level)?;
+                if self.saved_gpu_performance_level.is_none() {
+                    self.saved_gpu_performance_level = Some(driver.get_performance_level().await?);
+                }
+                driver.set_performance_level(new_level).await?;
+            } else if let Some(old_level) = self.saved_gpu_performance_level {
+                driver.set_performance_level(old_level).await?;
+                self.saved_gpu_performance_level = None;
+            }
         }
         self.current_profile = Some(profile.to_string());
         Ok(())
@@ -1198,12 +1217,15 @@ impl Service for TdpManagerService {
 pub(crate) mod test {
     use super::*;
     use anyhow::anyhow;
+    use std::collections::HashSet;
     use std::time::Duration;
     use tokio::fs::{create_dir_all, read_to_string, remove_dir, write};
     use tokio::sync::mpsc::{Sender, channel, unbounded_channel};
     use tokio::time::sleep;
     use zbus::{fdo, interface};
 
+    use crate::gpu::test::setup_devfreq_powersave;
+    use crate::gpu::{DevfreqPerformanceLevel, GpuPerformanceLevel};
     use crate::hardware::{
         BatteryChargeLimitConfig, DeviceConfig, FanSpeedConfig, FirmwareAttributeConfig,
         PerformanceProfileConfig, RangeConfig, TdpLimitConfig,
@@ -2384,5 +2406,142 @@ pub(crate) mod test {
 
         manager.set_tdp_limit(2).await.unwrap_err();
         assert_eq!(manager.get_tdp_limit().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_custom_profile_binding() {
+        let h = testing::start();
+
+        setup_devfreq_powersave(&h).await.unwrap();
+
+        let mut config = device_config().await.unwrap().unwrap();
+        config.performance_profile = Some(PerformanceProfileConfig {
+            suggested_default: String::from("Performance"),
+            driver: PlatformProfileDriverConfig::Custom {
+                profiles: HashMap::from_iter([
+                    (
+                        String::from("Performance"),
+                        CustomPerformanceProfile {
+                            cpufreq: Vec::new(),
+                            gpu_performance_level: None,
+                        },
+                    ),
+                    (
+                        String::from("Powersave"),
+                        CustomPerformanceProfile {
+                            cpufreq: Vec::new(),
+                            gpu_performance_level: Some(String::from("powersave")),
+                        },
+                    ),
+                ]),
+            },
+        });
+        h.test.set_device_config(config).await;
+
+        let gpu_driver = gpu_performance_level_driver().await.unwrap();
+        let platform_profile_driver = platform_profile_driver().await.unwrap();
+
+        assert_eq!(
+            gpu_driver
+                .lock()
+                .await
+                .get_performance_level()
+                .await
+                .unwrap(),
+            GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Auto)
+        );
+        assert_eq!(
+            platform_profile_driver
+                .lock()
+                .await
+                .get_platform_profile()
+                .await
+                .unwrap(),
+            "Performance"
+        );
+
+        let levels = HashSet::<GpuPerformanceLevel>::from_iter(
+            gpu_driver
+                .lock()
+                .await
+                .get_available_performance_levels()
+                .await
+                .unwrap()
+                .into_iter(),
+        );
+        assert_eq!(
+            levels,
+            HashSet::from_iter([
+                GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Auto),
+                GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Powersave),
+                GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Manual)
+            ])
+        );
+
+        let levels = HashSet::<String>::from_iter(
+            platform_profile_driver
+                .lock()
+                .await
+                .get_available_platform_profiles()
+                .await
+                .unwrap()
+                .into_iter(),
+        );
+        assert_eq!(
+            levels,
+            HashSet::from_iter([String::from("Performance"), String::from("Powersave")])
+        );
+
+        platform_profile_driver
+            .lock()
+            .await
+            .set_platform_profile("Powersave")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gpu_driver
+                .lock()
+                .await
+                .get_performance_level()
+                .await
+                .unwrap(),
+            GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Powersave)
+        );
+        assert_eq!(
+            platform_profile_driver
+                .lock()
+                .await
+                .get_platform_profile()
+                .await
+                .unwrap(),
+            "Powersave"
+        );
+
+        platform_profile_driver
+            .lock()
+            .await
+            .set_platform_profile("Performance")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gpu_driver
+                .lock()
+                .await
+                .get_performance_level()
+                .await
+                .unwrap(),
+            GpuPerformanceLevel::Devfreq(DevfreqPerformanceLevel::Auto)
+        );
+        assert_eq!(
+            platform_profile_driver
+                .lock()
+                .await
+                .get_platform_profile()
+                .await
+                .unwrap(),
+            "Performance"
+        );
     }
 }
