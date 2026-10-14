@@ -9,9 +9,8 @@ use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
-use zbus::connection::Connection;
 
-use crate::Service;
+use crate::{Service, system_connection};
 
 #[zbus::proxy(
     interface = "com.steampowered.SteamOSLogSubmitter.Manager",
@@ -59,7 +58,8 @@ impl Visit for StringVisitor {
 }
 
 impl LogReceiver {
-    pub async fn new(connection: Connection) -> Result<LogReceiver> {
+    pub async fn new() -> Result<LogReceiver> {
+        let connection = system_connection().await?;
         let proxy = DaemonProxy::new(&connection).await?;
         let (sender, receiver) = unbounded_channel();
         Ok(LogReceiver {

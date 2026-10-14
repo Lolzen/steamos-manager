@@ -191,7 +191,7 @@ pub async fn daemon() -> Result<()> {
         .at("/com/steampowered/SteamOSManager1", manager)
         .await?;
 
-    let log_receiver = LogReceiver::new(connection.clone()).await?;
+    let log_receiver = LogReceiver::new().await?;
     let remote_logger = LogLayer::new(&log_receiver);
     let subscriber = subscriber.with(remote_logger);
     set_global_default(subscriber)?;
