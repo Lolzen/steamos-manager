@@ -86,6 +86,8 @@ pub fn start() -> TestHandle {
             dbus_address: Mutex::new(None),
             platform_config: Mutex::new(None),
             device_config: Mutex::new(None),
+            session_connection: Mutex::new(None),
+            system_connection: Mutex::new(None),
         });
         *lock.borrow_mut() = Some(test.clone());
         TestHandle { test }
@@ -122,10 +124,23 @@ pub struct Test {
     pub dbus_address: Mutex<Option<Address>>,
     pub platform_config: Mutex<Option<PlatformConfig>>,
     pub device_config: Mutex<Option<DeviceConfig>>,
+    pub session_connection: Mutex<Option<Connection>>,
+    pub system_connection: Mutex<Option<Connection>>,
 }
 
 pub struct TestHandle {
     pub test: Arc<Test>,
+}
+
+#[allow(unused)]
+pub enum Connections {
+    None,
+    System,
+    Session,
+    Both,
+    CustomSystem(Connection),
+    CustomSession(Connection),
+    CustomBoth(Connection),
 }
 
 impl MockDBus {
@@ -247,6 +262,51 @@ impl TestHandle {
                 .build()
                 .await?,
         )
+    }
+
+    pub async fn populate_connections(&mut self, connections: Connections) -> Result<()> {
+        match connections {
+            Connections::None => (),
+            Connections::Session => {
+                let Some(connection) = (*self.test.mock_dbus.lock().unwrap())
+                    .as_ref()
+                    .map(|dbus| dbus.connection.clone())
+                else {
+                    bail!("Set up bus first");
+                };
+                *self.test.session_connection.lock().await = Some(connection);
+            }
+            Connections::System => {
+                let Some(connection) = (*self.test.mock_dbus.lock().unwrap())
+                    .as_ref()
+                    .map(|dbus| dbus.connection.clone())
+                else {
+                    bail!("Set up bus first");
+                };
+                *self.test.system_connection.lock().await = Some(connection);
+            }
+            Connections::Both => {
+                let Some(connection) = (*self.test.mock_dbus.lock().unwrap())
+                    .as_ref()
+                    .map(|dbus| dbus.connection.clone())
+                else {
+                    bail!("Set up bus first");
+                };
+                *self.test.session_connection.lock().await = Some(connection.clone());
+                *self.test.system_connection.lock().await = Some(connection);
+            }
+            Connections::CustomSession(connection) => {
+                *self.test.session_connection.lock().await = Some(connection);
+            }
+            Connections::CustomSystem(connection) => {
+                *self.test.system_connection.lock().await = Some(connection);
+            }
+            Connections::CustomBoth(connection) => {
+                *self.test.session_connection.lock().await = Some(connection.clone());
+                *self.test.system_connection.lock().await = Some(connection);
+            }
+        }
+        Ok(())
     }
 }
 

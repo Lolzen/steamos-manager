@@ -46,7 +46,6 @@ use crate::hardware::{
 use crate::job::JobManagerCommand;
 use crate::manager::root::{RootManagerProxy, SteamOSManagerSignals};
 use crate::manager::{MANAGER_PATH, RemoteInterface, RemoteInterfaceConfig, RemoteOwner};
-use crate::path;
 use crate::platform::platform_config;
 use crate::power::{
     BATTERY_DEFAULT_SUGGESTED_MINIMUM_LIMIT, CpuSchedulerManager, TdpManagerCommand,
@@ -68,6 +67,7 @@ use crate::wifi::{
     WifiBackend, get_wifi_backend, get_wifi_power_management_state, list_wifi_interfaces,
 };
 use crate::{SerialOrderValidator, Service, try_read_to_string};
+use crate::{path, session_connection, system_connection};
 
 macro_rules! method {
     ($self:expr, $method:expr, $($args:expr),+) => {
@@ -1865,12 +1865,12 @@ pub(crate) struct UserServices {
 }
 
 pub(crate) async fn create_interfaces(
-    session: Connection,
-    system: Connection,
     daemon: Sender<Command>,
     job_manager: UnboundedSender<JobManagerCommand>,
     tdp_manager: Option<UnboundedSender<TdpManagerCommand>>,
 ) -> Result<UserServices> {
+    let session = session_connection().await?;
+    let system = system_connection().await?;
     let proxy = Builder::<Proxy>::new(&system)
         .destination("com.steampowered.SteamOSManager1")?
         .path("/com/steampowered/SteamOSManager1")?
@@ -2096,6 +2096,7 @@ mod test {
         GpuPerformanceConfig, GpuPowerProfileConfig, PerformanceProfileConfig, RangeConfig,
         SteamDeckVariant, TdpLimitConfig,
     };
+    use crate::path;
     use crate::platform::{
         FormatDeviceConfig, PlatformConfig, ResetConfig, ScriptConfig, ServiceConfig, StorageConfig,
     };
@@ -2105,7 +2106,7 @@ mod test {
     use crate::session::{SessionManagerState, make_managed};
     use crate::systemd::escape;
     use crate::systemd::test::{MockManager, MockUnit};
-    use crate::{path, testing};
+    use crate::testing::{self, Connections};
 
     use anyhow::{anyhow, bail, ensure};
     use linux_cec::VendorId;
@@ -2399,14 +2400,10 @@ mod test {
 
         config.setup.setup(&handle, &connection).await?;
 
-        create_interfaces(
-            connection.clone(),
-            connection.clone(),
-            tx_ctx,
-            tx_job,
-            tx_tdp.clone(),
-        )
-        .await?;
+        handle
+            .populate_connections(Connections::CustomBoth(connection.clone()))
+            .await?;
+        create_interfaces(tx_ctx, tx_job, tx_tdp.clone()).await?;
 
         tokio::spawn(async move {
             while let Some(command) = rx_ctx.recv().await {

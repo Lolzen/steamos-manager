@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#[cfg(not(test))]
+use anyhow::Error;
 use anyhow::{Result, anyhow, ensure};
 use nix::time::{ClockId, clock_gettime};
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,8 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use tokio::net::UnixDatagram;
 use tokio::signal::unix::{SignalKind, signal};
+#[cfg(not(test))]
+use tokio::sync::OnceCell;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -29,6 +33,11 @@ pub(crate) mod user;
 
 pub use root::daemon as root;
 pub use user::daemon as user;
+
+#[cfg(not(test))]
+static SESSION_BUS: OnceCell<Connection> = OnceCell::const_new();
+#[cfg(not(test))]
+static SYSTEM_BUS: OnceCell<Connection> = OnceCell::const_new();
 
 pub(crate) trait DaemonContext: Sized {
     type State: for<'a> Deserialize<'a> + Serialize + Default + Debug;
@@ -267,4 +276,42 @@ pub(crate) fn channel<C: DaemonContext>() -> (
     Receiver<DaemonCommand<C::Command>>,
 ) {
     mpsc::channel(10)
+}
+
+#[cfg(not(test))]
+pub async fn system_connection() -> Result<Connection> {
+    SYSTEM_BUS
+        .get_or_try_init(|| async { Connection::system().await })
+        .await
+        .cloned()
+        .map_err(<_ as Into<Error>>::into)
+}
+#[cfg(test)]
+pub async fn system_connection() -> Result<Connection> {
+    let handle = crate::testing::current();
+    handle
+        .system_connection
+        .lock()
+        .await
+        .clone()
+        .ok_or(anyhow!("No connection"))
+}
+
+#[cfg(not(test))]
+pub async fn session_connection() -> Result<Connection> {
+    SESSION_BUS
+        .get_or_try_init(|| async { Connection::session().await })
+        .await
+        .cloned()
+        .map_err(<_ as Into<Error>>::into)
+}
+#[cfg(test)]
+pub async fn session_connection() -> Result<Connection> {
+    let handle = crate::testing::current();
+    handle
+        .session_connection
+        .lock()
+        .await
+        .clone()
+        .ok_or(anyhow!("No connection"))
 }

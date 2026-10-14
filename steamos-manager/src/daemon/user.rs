@@ -24,7 +24,9 @@ use zbus::connection::Connection;
 use zbus::fdo::PeerProxy;
 
 use crate::daemon::config::write_state;
-use crate::daemon::{Daemon, DaemonCommand, DaemonContext, channel};
+use crate::daemon::{
+    Daemon, DaemonCommand, DaemonContext, channel, session_connection, system_connection,
+};
 use crate::job::{JobManager, JobManagerService};
 use crate::manager::user::create_interfaces;
 use crate::path;
@@ -166,7 +168,7 @@ impl Default for UserState {
 pub(crate) type Command = DaemonCommand<UserCommand>;
 
 async fn create_connections() -> Result<(Connection, Connection)> {
-    let system = Connection::system().await?;
+    let system = system_connection().await?;
     // Ensure the root daemon is running, or start it if it's not
     for _ in 0..5 {
         let peer = PeerProxy::new(&system, "com.steampowered.SteamOSManager1", "/").await?;
@@ -181,7 +183,7 @@ async fn create_connections() -> Result<(Connection, Connection)> {
             _ = sleep(Duration::from_secs(1)) => (),
         }
     }
-    let connection = Connection::session().await?;
+    let connection = session_connection().await?;
 
     Ok((connection, system))
 }
@@ -225,8 +227,7 @@ pub async fn daemon() -> Result<()> {
         info!("TdpManagerService not available: {e}");
     }
 
-    let services =
-        create_interfaces(session.clone(), system.clone(), tx.clone(), jm_tx, tdp_tx).await?;
+    let services = create_interfaces(tx.clone(), jm_tx, tdp_tx).await?;
 
     daemon.add_service(services.signal_relay);
     if let Some(service) = services.screenreader_setup {

@@ -47,6 +47,8 @@ pub mod screenreader;
 pub mod session;
 pub mod wifi;
 
+pub use daemon::{session_connection, system_connection};
+
 #[cfg(test)]
 mod testing;
 

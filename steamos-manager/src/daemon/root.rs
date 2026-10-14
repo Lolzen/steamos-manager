@@ -15,9 +15,8 @@ use tracing::error;
 use tracing::subscriber::set_global_default;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
-use zbus::connection::Connection;
 
-use crate::daemon::{Daemon, DaemonCommand, DaemonContext, channel};
+use crate::daemon::{Daemon, DaemonCommand, DaemonContext, channel, system_connection};
 use crate::ds_inhibit::Inhibitor;
 use crate::inputplumber::DeckService;
 use crate::manager::root::SteamOSManager;
@@ -168,10 +167,6 @@ impl DaemonContext for RootContext {
 
 pub(crate) type Command = DaemonCommand<RootCommand>;
 
-async fn create_connection() -> Result<Connection> {
-    Ok(Connection::system().await?)
-}
-
 pub async fn daemon() -> Result<()> {
     // This daemon is responsible for creating a dbus api that steam client can use to do various OS
     // level things. It implements com.steampowered.SteamOSManager1.RootManager interface
@@ -182,7 +177,7 @@ pub async fn daemon() -> Result<()> {
         .with(EnvFilter::from_default_env());
     let (tx, rx) = channel::<RootContext>();
 
-    let connection = match create_connection().await {
+    let connection = match system_connection().await {
         Ok(c) => c,
         Err(e) => {
             let _guard = tracing::subscriber::set_default(subscriber);
