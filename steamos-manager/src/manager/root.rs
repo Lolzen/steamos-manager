@@ -20,8 +20,8 @@ use zbus::zvariant::{self, Fd};
 use zbus::{Connection, fdo, interface, proxy};
 
 use crate::cec::{HdmiCecHwController, cec_hw_controller};
-use crate::daemon::DaemonCommand;
 use crate::daemon::root::{Command, RootCommand};
+use crate::daemon::{DaemonCommand, system_connection};
 use crate::error::{to_zbus_error, to_zbus_fdo_error};
 use crate::gpu::{
     GpuPerformanceLevelDriver, GpuPowerProfileDriver, gpu_performance_level_driver,
@@ -72,7 +72,8 @@ pub struct SteamOSManager {
 }
 
 impl SteamOSManager {
-    pub async fn new(connection: Connection, channel: Sender<Command>) -> Result<Self> {
+    pub async fn new(channel: Sender<Command>) -> Result<Self> {
+        let connection = system_connection().await?;
         Ok(SteamOSManager {
             fan_control: FanControl::new(connection.clone()),
             wifi_debug_mode: WifiDebugMode::Off,
@@ -829,7 +830,10 @@ mod test {
 
         let (tx, _rx) = channel::<RootContext>();
         let connection = handle.new_dbus().await?;
-        let manager = SteamOSManager::new(connection.clone(), tx).await?;
+        handle
+            .populate_connections(testing::Connections::System)
+            .await?;
+        let manager = SteamOSManager::new(tx).await?;
         connection
             .object_server()
             .at("/com/steampowered/SteamOSManager1", manager)

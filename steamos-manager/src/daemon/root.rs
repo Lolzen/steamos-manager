@@ -185,7 +185,7 @@ pub async fn daemon() -> Result<()> {
             bail!(e);
         }
     };
-    let manager = SteamOSManager::new(connection.clone(), tx.clone()).await?;
+    let manager = SteamOSManager::new(tx.clone()).await?;
     connection
         .object_server()
         .at("/com/steampowered/SteamOSManager1", manager)
