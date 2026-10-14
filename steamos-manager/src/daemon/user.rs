@@ -214,7 +214,7 @@ pub async fn daemon() -> Result<()> {
     let jm_service = JobManagerService::new(job_manager, jm_rx, system.clone());
 
     let (tdp_tx, tdp_rx) = unbounded_channel();
-    let tdp_service = TdpManagerService::new(tdp_rx, &system, &session).await;
+    let tdp_service = TdpManagerService::new(tdp_rx).await;
     let tdp_tx = if tdp_service.is_ok() {
         Some(tdp_tx)
     } else {

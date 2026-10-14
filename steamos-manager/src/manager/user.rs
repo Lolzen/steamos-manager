@@ -3664,8 +3664,7 @@ mod test {
         } else {
             (tx_tdp, rx_tdp) = unbounded_channel::<TdpManagerCommand>();
         }
-        let mut service =
-            TdpManagerService::new(rx_tdp, &test.connection, &test.connection).await?;
+        let mut service = TdpManagerService::new(rx_tdp).await?;
         let service = spawn(async move { service.run().await });
 
         let remote_iface = test
