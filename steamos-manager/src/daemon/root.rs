@@ -122,8 +122,7 @@ impl DaemonContext for RootContext {
     ) -> Result<()> {
         self.state = state;
 
-        let connection = daemon.get_connection();
-        let ftrace = Ftrace::init(&connection).await?;
+        let ftrace = Ftrace::init().await?;
         daemon.add_service(ftrace);
 
         let ip = DeckService::init().await?;

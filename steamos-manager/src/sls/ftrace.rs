@@ -7,9 +7,9 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tracing::{error, info};
-use zbus::{Connection, zvariant};
+use zbus::zvariant;
 
-use crate::{Service, get_appid, path, read_comm};
+use crate::{Service, get_appid, path, read_comm, system_connection};
 
 #[zbus::proxy(
     interface = "com.steampowered.SteamOSLogSubmitter.Trace",
@@ -58,7 +58,7 @@ async fn setup_traces(base: &Path) -> Result<()> {
 }
 
 impl Ftrace {
-    pub async fn init(connection: &Connection) -> Result<Ftrace> {
+    pub async fn init() -> Result<Ftrace> {
         let path = Self::base();
         fs::create_dir_all(&path).await?;
         setup_traces(path.as_path()).await?;
@@ -67,7 +67,7 @@ impl Ftrace {
             .open_receiver(path.join("trace_pipe"))?;
         Ok(Ftrace {
             pipe: Some(BufReader::new(file)),
-            proxy: TraceHelperProxy::new(connection).await?,
+            proxy: TraceHelperProxy::new(&system_connection().await?).await?,
         })
     }
 
@@ -131,7 +131,7 @@ impl Service for Ftrace {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::testing;
+    use crate::testing::{self, Connections};
     use nix::sys::stat::Mode;
     use nix::unistd;
     use tokio::fs::{create_dir_all, read_to_string, try_exists, write};
@@ -232,8 +232,9 @@ mod test {
             Mode::S_IRUSR | Mode::S_IWUSR,
         )
         .expect("trace_pipe");
-        let dbus = h.new_dbus().await.expect("dbus");
-        let _ftrace = Ftrace::init(&dbus).await.expect("ftrace");
+        _ = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        let _ftrace = Ftrace::init().await.expect("ftrace");
 
         assert_eq!(
             read_to_string(tracefs.join("events/oom/mark_victim/enable"))
@@ -263,8 +264,9 @@ mod test {
             Mode::S_IRUSR | Mode::S_IWUSR,
         )
         .expect("trace_pipe");
-        let dbus = h.new_dbus().await.expect("dbus");
-        let _ftrace = Ftrace::init(&dbus).await.expect("ftrace");
+        _ = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        let _ftrace = Ftrace::init().await.expect("ftrace");
 
         assert_eq!(
             read_to_string(tracefs.join("events/oom/mark_victim/enable"))
@@ -288,7 +290,7 @@ mod test {
 
     #[tokio::test]
     async fn ftrace_relay() {
-        let _h = testing::start();
+        let mut h = testing::start();
 
         let tracefs = Ftrace::base();
 
@@ -317,16 +319,18 @@ mod test {
 
         let (sender, mut receiver) = unbounded_channel();
         let trace = MockTrace { traces: sender };
-        let dbus = zbus::connection::Builder::session()
-            .unwrap()
-            .name("com.steampowered.SteamOSLogSubmitter")
-            .unwrap()
-            .serve_at("/com/steampowered/SteamOSLogSubmitter/helpers/Trace", trace)
-            .unwrap()
-            .build()
+        let connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        connection
+            .request_name("com.steampowered.SteamOSLogSubmitter")
             .await
-            .expect("dbus");
-        let mut ftrace = Ftrace::init(&dbus).await.expect("ftrace");
+            .unwrap();
+        let object_server = connection.object_server();
+        object_server
+            .at("/com/steampowered/SteamOSLogSubmitter/helpers/Trace", trace)
+            .await
+            .expect("at");
+        let mut ftrace = Ftrace::init().await.expect("ftrace");
 
         assert!(matches!(
             receiver.try_recv(),
