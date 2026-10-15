@@ -66,9 +66,6 @@ pub struct SteamOSManager {
     tdp_limit_manager: Option<Box<dyn TdpLimitManager>>,
     gpu_performance_level: Option<Box<dyn GpuPerformanceLevelDriver>>,
     gpu_power_profile: Option<Box<dyn GpuPowerProfileDriver>>,
-    // Whether we should use trace-cmd or not.
-    // True on galileo devices, false otherwise
-    should_trace: bool,
     job_manager: JobManager,
     cpu_scheduler_manager: CpuSchedulerManager<'static>,
     cec_hw: Option<Box<dyn HdmiCecHwController>>,
@@ -91,8 +88,6 @@ impl SteamOSManager {
                 .await
                 .inspect_err(|e| info!("Could not set up GPU power profile management: {e}"))
                 .ok(),
-            should_trace: steam_deck_variant().await.unwrap_or_default()
-                == SteamDeckVariant::Galileo,
             job_manager: JobManager::new(connection.clone()).await?,
             cpu_scheduler_manager: CpuSchedulerManager::new(&connection).await?,
             cec_hw: cec_hw_controller()
@@ -593,14 +588,10 @@ impl SteamOSManager {
             None => 20000,
             Some(Err(e)) => return Err(fdo::Error::InvalidArgs(e.to_string())),
         };
-        match set_wifi_debug_mode(
-            wanted_mode,
-            buffer_size,
-            self.should_trace,
-            &self.connection,
-        )
-        .await
-        {
+        // Whether we should use trace-cmd or not. True on Galileo, false otherwise.
+        let should_trace =
+            steam_deck_variant().await.unwrap_or_default() == SteamDeckVariant::Galileo;
+        match set_wifi_debug_mode(wanted_mode, buffer_size, should_trace, &self.connection).await {
             Ok(()) => {
                 self.wifi_debug_mode = wanted_mode;
                 self.wifi_debug_mode_state_changed(&ctx).await?;
