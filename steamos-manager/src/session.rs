@@ -30,7 +30,7 @@ use zbus::{Connection, fdo};
 use crate::daemon::user::{Command as DaemonCommand, UserCommand};
 use crate::manager::root::RootManagerProxy;
 use crate::systemd::{ActiveState, JobMode, SystemdUnit};
-use crate::{Service, path};
+use crate::{Service, path, session_connection, system_connection};
 
 const CONFIG_PREFIX_USR: &str = "/usr/lib/sddm/sddm.conf.d";
 const CONFIG_PREFIX: &str = "/etc/sddm.conf.d";
@@ -226,13 +226,11 @@ pub(crate) async fn is_valid_desktop_session(session: &str) -> Result<bool> {
 }
 
 impl SessionManager {
-    pub(crate) async fn new(
-        connection: Connection,
-        system: &Connection,
-        channel: Sender<DaemonCommand>,
-    ) -> Result<SessionManager> {
+    pub(crate) async fn new(channel: Sender<DaemonCommand>) -> Result<SessionManager> {
+        let connection = session_connection().await?;
+        let system = system_connection().await?;
         Ok(SessionManager {
-            manager: RootManagerProxy::new(system).await?,
+            manager: RootManagerProxy::new(&system).await?,
             connection,
             channel,
         })
@@ -494,7 +492,7 @@ impl Service for SessionManagerService {
 mod test {
     use super::*;
     use crate::systemd::test::{MockManager, MockUnit};
-    use crate::testing;
+    use crate::testing::{self, Connections};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::spawn;
@@ -598,8 +596,12 @@ mod test {
     #[tokio::test]
     async fn test_get_state() {
         let mut handle = testing::start();
-        let connection = handle.new_dbus().await.unwrap();
+        _ = handle.new_dbus().await.unwrap();
         let (tx, mut rx) = channel(2);
+        handle
+            .populate_connections(Connections::Both)
+            .await
+            .unwrap();
 
         let task = spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -614,9 +616,7 @@ mod test {
             }
         });
 
-        let manager = SessionManager::new(connection.clone(), &connection, tx)
-            .await
-            .unwrap();
+        let manager = SessionManager::new(tx).await.unwrap();
 
         assert_eq!(
             manager.default_desktop_session().await.unwrap(),
@@ -654,6 +654,10 @@ mod test {
             .request_name("com.steampowered.SteamOSManager1")
             .await
             .unwrap();
+        handle
+            .populate_connections(Connections::Both)
+            .await
+            .unwrap();
 
         let manager = MockRootManager::default();
         connection
@@ -676,9 +680,7 @@ mod test {
         write(path("/usr/share/wayland-sessions/gamescope.desktop"), b"")
             .await
             .unwrap();
-        let manager = SessionManager::new(connection.clone(), &connection, tx)
-            .await
-            .unwrap();
+        let manager = SessionManager::new(tx).await.unwrap();
 
         assert_eq!(
             manager.default_desktop_session().await.unwrap(),
@@ -744,6 +746,10 @@ mod test {
             .request_name("org.freedesktop.systemd1")
             .await
             .unwrap();
+        handle
+            .populate_connections(Connections::Both)
+            .await
+            .unwrap();
 
         let manager = MockRootManager::default();
         let notify = manager.notify.clone();
@@ -796,9 +802,7 @@ mod test {
 
         sleep(Duration::from_millis(1)).await;
 
-        let manager = SessionManager::new(connection.clone(), &connection, tx)
-            .await
-            .unwrap();
+        let manager = SessionManager::new(tx).await.unwrap();
 
         manager
             .switch_to_login_mode(LoginMode::Desktop)
@@ -843,6 +847,10 @@ mod test {
             .request_name("org.freedesktop.systemd1")
             .await
             .unwrap();
+        handle
+            .populate_connections(Connections::Both)
+            .await
+            .unwrap();
 
         let manager = MockRootManager::default();
         let notify = manager.notify.clone();
@@ -885,9 +893,7 @@ mod test {
 
         sleep(Duration::from_millis(1)).await;
 
-        let manager = SessionManager::new(connection.clone(), &connection, tx)
-            .await
-            .unwrap();
+        let manager = SessionManager::new(tx).await.unwrap();
 
         assert_eq!(
             manager.default_desktop_session().await.unwrap(),

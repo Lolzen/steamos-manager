@@ -1927,7 +1927,7 @@ pub(crate) async fn create_interfaces(
 
     let session_management = SessionManagement1 {
         proxy: proxy.clone(),
-        manager: SessionManager::new(session.clone(), &system, daemon).await?,
+        manager: SessionManager::new(daemon).await?,
     };
     let wifi_backend = WifiBackend1 {
         proxy: proxy.clone(),
