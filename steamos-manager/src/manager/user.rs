@@ -1710,7 +1710,6 @@ impl Service for ScreenReaderSetupService {
 async fn create_platform_interfaces(
     proxy: &Proxy<'static>,
     object_server: &ObjectServer,
-    connection: &Connection,
     job_manager: &UnboundedSender<JobManagerCommand>,
 ) -> Result<()> {
     let Some(config) = platform_config().await? else {
@@ -1747,7 +1746,7 @@ async fn create_platform_interfaces(
     }
 
     if let Some(config) = config.fan_control.as_ref() {
-        match config.is_valid(connection, true).await {
+        match config.is_valid(true).await {
             Ok(true) => {
                 object_server.at(MANAGER_PATH, fan_control).await?;
             }
@@ -1792,7 +1791,6 @@ async fn create_platform_interfaces(
 async fn create_device_interfaces(
     proxy: &Proxy<'static>,
     object_server: &ObjectServer,
-    system: &Connection,
     tdp_manager: Option<UnboundedSender<TdpManagerCommand>>,
 ) -> Result<()> {
     let Some(config) = device_config().await? else {
@@ -1845,7 +1843,7 @@ async fn create_device_interfaces(
     }
 
     if let Some(config) = config.firmware_debug.as_ref() {
-        match config.is_valid(system, true).await {
+        match config.is_valid(true).await {
             Ok(true) => {
                 object_server.at(MANAGER_PATH, firmware_debug).await?;
             }
@@ -1938,13 +1936,11 @@ pub(crate) async fn create_interfaces(
 
     let object_server = session.object_server();
 
-    if let Err(e) =
-        create_device_interfaces(&proxy, object_server, &system, tdp_manager.clone()).await
-    {
+    if let Err(e) = create_device_interfaces(&proxy, object_server, tdp_manager.clone()).await {
         error!("Failed to initalize device-specific interfaces: {e}");
     }
 
-    if let Err(e) = create_platform_interfaces(&proxy, object_server, &system, &job_manager).await {
+    if let Err(e) = create_platform_interfaces(&proxy, object_server, &job_manager).await {
         error!("Failed to initalize platform-specific interfaces: {e}");
     }
 

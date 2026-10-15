@@ -18,11 +18,11 @@ use tokio::fs::{metadata, read_to_string};
 #[cfg(not(test))]
 use tokio::sync::OnceCell;
 use tokio::task::spawn_blocking;
-use zbus::Connection;
 
 #[cfg(test)]
 use crate::path;
 use crate::systemd::SystemdUnit;
+use crate::{session_connection, system_connection};
 
 #[cfg(not(test))]
 static PLATFORM_CONFIG: OnceCell<Option<PlatformConfig>> = OnceCell::const_new();
@@ -101,9 +101,19 @@ pub(crate) enum ServiceConfig {
 }
 
 impl ServiceConfig {
-    pub(crate) async fn is_valid(&self, connection: &Connection, root: bool) -> Result<bool> {
+    pub(crate) async fn is_valid(&self, root: bool) -> Result<bool> {
         match self {
-            ServiceConfig::Systemd(unit) => SystemdUnit::exists(connection, unit).await,
+            ServiceConfig::Systemd(unit) => {
+                SystemdUnit::exists(
+                    &if root {
+                        system_connection().await
+                    } else {
+                        session_connection().await
+                    }?,
+                    unit,
+                )
+                .await
+            }
             ServiceConfig::Script {
                 start,
                 stop,
