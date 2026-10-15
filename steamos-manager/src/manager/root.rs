@@ -173,7 +173,7 @@ impl SteamOSManager {
             Ok(state) => state,
             Err(err) => return Err(to_zbus_fdo_error(err)),
         };
-        set_wifi_power_management_state(state, &self.connection)
+        set_wifi_power_management_state(state)
             .await
             .map_err(to_zbus_fdo_error)
     }
@@ -592,7 +592,7 @@ impl SteamOSManager {
         // Whether we should use trace-cmd or not. True on Galileo, false otherwise.
         let should_trace =
             steam_deck_variant().await.unwrap_or_default() == SteamDeckVariant::Galileo;
-        match set_wifi_debug_mode(wanted_mode, buffer_size, should_trace, &self.connection).await {
+        match set_wifi_debug_mode(wanted_mode, buffer_size, should_trace).await {
             Ok(()) => {
                 self.wifi_debug_mode = wanted_mode;
                 self.wifi_debug_mode_state_changed(&ctx).await?;
@@ -615,7 +615,7 @@ impl SteamOSManager {
             Ok(backend) => backend,
             Err(e) => return Err(fdo::Error::InvalidArgs(e.to_string())),
         };
-        set_wifi_backend(backend, &self.connection)
+        set_wifi_backend(backend)
             .await
             .inspect_err(|message| error!("Error setting wifi backend: {message}"))
             .map_err(to_zbus_fdo_error)

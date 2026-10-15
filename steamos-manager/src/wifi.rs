@@ -24,12 +24,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::sleep;
 use tracing::{debug, error};
 use udev::{Event, EventType};
-use zbus::Connection;
 
 use crate::process::{run_script, script_output};
 use crate::systemd::{JobMode, SystemdUnit, daemon_reload};
 use crate::udev::single_poll;
-use crate::{path, read_config_directory};
+use crate::{path, read_config_directory, system_connection};
 
 const OVERRIDE_CONTENTS: &str = "[Service]
 ExecStart=
@@ -137,15 +136,17 @@ pub(crate) async fn setup_iwd_config(want_override: bool) -> std::io::Result<()>
     }
 }
 
-async fn restart_iwd(connection: &Connection) -> Result<()> {
+async fn restart_iwd() -> Result<()> {
+    let connection = system_connection().await?;
+
     // First reload systemd since we modified the config most likely
     // otherwise we wouldn't be restarting iwd.
-    daemon_reload(connection)
+    daemon_reload(&connection)
         .await
         .inspect_err(|message| error!("restart_iwd: reload systemd got an error: {message}"))?;
 
     // worked, now restart iwd
-    let unit = SystemdUnit::new(connection, "iwd.service").await?;
+    let unit = SystemdUnit::new(&connection, "iwd.service").await?;
     unit.restart(JobMode::Fail)
         .await
         .inspect_err(|message| error!("restart_iwd: restart unit got an error: {message}"))?;
@@ -194,7 +195,6 @@ pub(crate) async fn set_wifi_debug_mode(
     mode: WifiDebugMode,
     buffer_size: u32,
     should_trace: bool,
-    connection: &Connection,
 ) -> Result<()> {
     match get_wifi_backend().await {
         Ok(WifiBackend::Iwd) => (),
@@ -214,7 +214,7 @@ pub(crate) async fn set_wifi_debug_mode(
                 bail!("setup_iwd_config false got an error: {message}");
             }
             // setup_iwd_config false worked
-            if let Err(message) = restart_iwd(connection).await {
+            if let Err(message) = restart_iwd().await {
                 bail!("restart_iwd got an error: {message}");
             }
         }
@@ -225,7 +225,7 @@ pub(crate) async fn set_wifi_debug_mode(
                 bail!("setup_iwd_config true got an error: {message}");
             }
             // setup_iwd_config worked
-            if let Err(message) = restart_iwd(connection).await {
+            if let Err(message) = restart_iwd().await {
                 bail!("restart_iwd got an error: {message}");
             }
             // restart_iwd worked
@@ -335,23 +335,20 @@ async fn get_nm_settings() -> Result<NmWifiSettings> {
     Ok(NmWifiSettings { powersave, backend })
 }
 
-async fn set_nm_settings(
-    settings: NmWifiSettings,
-    restart: bool,
-    connection: &Connection,
-) -> Result<()> {
+async fn set_nm_settings(settings: NmWifiSettings, restart: bool) -> Result<()> {
     let NmWifiSettings { powersave, backend } = settings;
     let powersave = powersave as i64;
+    let connection = system_connection().await?;
     let contents =
         format!("[connection]\nwifi.powersave={powersave}\n[device]\nwifi.backend={backend}\n");
     fs::write(path(WIFI_BACKEND_FILE), contents).await?;
 
     // Stop the other backend and restart NM
-    let unit = SystemdUnit::new(connection, "NetworkManager.service").await?;
+    let unit = SystemdUnit::new(&connection, "NetworkManager.service").await?;
 
     if restart {
         let backend_unit = SystemdUnit::new(
-            connection,
+            &connection,
             match backend {
                 WifiBackend::Iwd => "wpa_supplicant.service",
                 WifiBackend::WPASupplicant => "iwd.service",
@@ -379,10 +376,10 @@ pub(crate) async fn get_wifi_backend() -> Result<WifiBackend> {
     Ok(get_nm_settings().await?.backend)
 }
 
-pub(crate) async fn set_wifi_backend(backend: WifiBackend, connection: &Connection) -> Result<()> {
+pub(crate) async fn set_wifi_backend(backend: WifiBackend) -> Result<()> {
     let mut settings = get_nm_settings().await?;
     settings.backend = backend;
-    set_nm_settings(settings, true, connection).await
+    set_nm_settings(settings, true).await
 }
 
 pub(crate) async fn list_wifi_interfaces() -> Result<Vec<String>> {
@@ -424,10 +421,7 @@ pub(crate) async fn get_wifi_power_management_state() -> Result<WifiPowerManagem
     Ok(WifiPowerManagement::Disabled)
 }
 
-pub(crate) async fn set_wifi_power_management_state(
-    state: WifiPowerManagement,
-    connection: &Connection,
-) -> Result<()> {
+pub(crate) async fn set_wifi_power_management_state(state: WifiPowerManagement) -> Result<()> {
     // Manually set power management for runtime
     let str_state = match state {
         WifiPowerManagement::Disabled => "off",
@@ -446,7 +440,7 @@ pub(crate) async fn set_wifi_power_management_state(
     // ...and inform and reload NetworkManager to take care of it after suspend/wake or reboot
     let mut settings = get_nm_settings().await?;
     settings.powersave = state.into();
-    set_nm_settings(settings, false, connection).await
+    set_nm_settings(settings, false).await
 }
 
 async fn generate_wifi_dump_inner() -> Result<PathBuf> {
@@ -513,10 +507,13 @@ pub(crate) async fn generate_wifi_dump() -> Result<PathBuf> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::systemd::test::{MockManager, MockUnit};
-    use crate::{enum_on_off, enum_roundtrip, testing};
+
     use std::ffi::OsStr;
     use tokio::fs::{create_dir_all, read_to_string, remove_dir, try_exists, write};
+
+    use crate::systemd::test::{MockManager, MockUnit};
+    use crate::testing::Connections;
+    use crate::{enum_on_off, enum_roundtrip, testing};
 
     #[test]
     fn test_wifi_backend_to_string() {
@@ -628,6 +625,7 @@ mod test {
     async fn test_set_nm_settings_no_restart() {
         let mut h = testing::start();
         let connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
         connection
             .request_name("org.freedesktop.systemd1")
             .await
@@ -657,7 +655,6 @@ mod test {
                 powersave: NmSettingWirelessPowersave::Disable,
             },
             false,
-            &connection,
         )
         .await
         .unwrap();
@@ -690,6 +687,7 @@ mod test {
         wpa_supplicant.unit_file = String::from("disabled");
 
         let connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
         connection
             .request_name("org.freedesktop.systemd1")
             .await
@@ -752,7 +750,6 @@ mod test {
                 powersave: NmSettingWirelessPowersave::Disable,
             },
             true,
-            &connection,
         )
         .await
         .unwrap();
@@ -784,6 +781,7 @@ mod test {
         iwd.unit_file = String::from("enabled");
 
         let connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
         connection
             .request_name("org.freedesktop.systemd1")
             .await
@@ -829,7 +827,6 @@ mod test {
                 powersave: NmSettingWirelessPowersave::Disable,
             },
             true,
-            &connection,
         )
         .await
         .unwrap();
@@ -846,6 +843,7 @@ mod test {
         iwd.unit_file = String::from("enabled");
 
         let connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
         connection
             .request_name("org.freedesktop.systemd1")
             .await
@@ -893,7 +891,6 @@ mod test {
                     powersave: NmSettingWirelessPowersave::Disable,
                 },
                 true,
-                &connection,
             )
             .await
             .is_err()
