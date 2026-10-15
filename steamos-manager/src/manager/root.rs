@@ -90,7 +90,7 @@ impl SteamOSManager {
                 .inspect_err(|e| info!("Could not set up GPU power profile management: {e}"))
                 .ok(),
             job_manager: JobManager::new(connection.clone()).await?,
-            cpu_scheduler_manager: CpuSchedulerManager::new(&connection).await?,
+            cpu_scheduler_manager: CpuSchedulerManager::new().await?,
             cec_hw: cec_hw_controller()
                 .await
                 .inspect_err(|e| info!("Could not set up HDMI CEC hardware controller: {e}"))
