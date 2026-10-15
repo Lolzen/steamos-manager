@@ -15,8 +15,8 @@ use zbus::names::OwnedInterfaceName;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::ObjectPath;
 
-use crate::Service;
 use crate::hardware::{InputPlumberTargetDevice, device_config};
+use crate::{Service, system_connection};
 
 #[zbus::proxy(
     interface = "org.shadowblip.Input.CompositeDevice",
@@ -45,14 +45,14 @@ pub struct DeckService {
 }
 
 impl DeckService {
-    pub fn init(connection: Connection) -> DeckService {
-        DeckService {
-            connection,
+    pub async fn init() -> Result<DeckService> {
+        Ok(DeckService {
+            connection: system_connection().await?,
             composite_device_iface_name: OwnedInterfaceName::try_from(
                 "org.shadowblip.Input.CompositeDevice",
             )
             .unwrap(),
-        }
+        })
     }
 
     async fn check_devices(&self, object_manager: &ObjectManagerProxy<'_>) -> Result<()> {

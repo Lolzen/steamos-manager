@@ -126,7 +126,7 @@ impl DaemonContext for RootContext {
         let ftrace = Ftrace::init(&connection).await?;
         daemon.add_service(ftrace);
 
-        let ip = DeckService::init(connection);
+        let ip = DeckService::init().await?;
         daemon.add_service(ip);
 
         let sysfs = SysfsWriterService::init()?;
