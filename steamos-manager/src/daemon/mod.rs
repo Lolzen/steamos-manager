@@ -156,10 +156,6 @@ impl<C: DaemonContext> Daemon<C> {
         token
     }
 
-    pub(crate) fn get_connection(&self) -> Connection {
-        self.connection.clone()
-    }
-
     pub(crate) async fn run(&mut self, mut context: C) -> Result<()> {
         ensure!(
             !self.services.is_empty(),
