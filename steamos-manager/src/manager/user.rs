@@ -1901,12 +1901,12 @@ pub(crate) async fn create_interfaces(
         order: SerialOrderValidator::default(),
     };
 
-    let hdmi_cec = HdmiCecControl::new(&session).await;
+    let hdmi_cec = HdmiCecControl::new().await;
     let cecd_service;
     let hdmi_cec_config;
     match hdmi_cec {
         Ok(ref hdmi_cec) => {
-            cecd_service = CecdService::new(&system, hdmi_cec).await.ok();
+            cecd_service = CecdService::new(hdmi_cec).await.ok();
             hdmi_cec_config = Config1Proxy::new(&session).await.ok();
         }
         Err(ref e) => {

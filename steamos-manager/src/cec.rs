@@ -30,7 +30,7 @@ use zbus::fdo::ObjectManagerProxy;
 
 use crate::hardware::device_config;
 use crate::manager::root::RootManagerProxy;
-use crate::{Service, path};
+use crate::{Service, path, session_connection, system_connection};
 
 const CECD_CONFIG_DIR: &str = "cecd/config.d";
 const CECD_RUNTIME_CONFIG: &str = "99-steamos-manager.toml";
@@ -117,9 +117,10 @@ pub struct HdmiCecControl<'dbus> {
 }
 
 impl<'dbus> HdmiCecControl<'dbus> {
-    pub async fn new(connection: &Connection) -> Result<HdmiCecControl<'dbus>> {
-        let proxy = Config1Proxy::new(connection).await?;
-        let daemon = Daemon1Proxy::new(connection).await?;
+    pub async fn new() -> Result<HdmiCecControl<'dbus>> {
+        let connection = session_connection().await?;
+        let proxy = Config1Proxy::new(&connection).await?;
+        let daemon = Daemon1Proxy::new(&connection).await?;
         // Sanity check to make sure the daemon is active
         // Note, this can easily take 250-300 ms, so use a generous timeout in
         // case the CEC bus is busy.
@@ -379,11 +380,8 @@ pub(crate) struct CecdService {
 }
 
 impl CecdService {
-    pub(crate) async fn new(
-        system: &Connection,
-        hdmi_cec: &HdmiCecControl<'_>,
-    ) -> Result<CecdService> {
-        let manager = RootManagerProxy::new(system).await?;
+    pub(crate) async fn new(hdmi_cec: &HdmiCecControl<'_>) -> Result<CecdService> {
+        let manager = RootManagerProxy::new(&system_connection().await?).await?;
         let object_manager = ObjectManagerProxy::new(
             &hdmi_cec.connection,
             "com.steampowered.CecDaemon1",
@@ -520,6 +518,7 @@ mod test {
 
     use crate::hardware::SteamDeckVariant;
     use crate::hardware::test::fake_model;
+    use crate::testing::Connections;
     use crate::{enum_roundtrip, path, testing};
 
     #[test]
@@ -809,6 +808,8 @@ mod test {
             .await?;
 
         let connection = h.new_connection().await?;
+        h.populate_connections(Connections::CustomBoth(connection.clone()))
+            .await?;
 
         Ok(CecHwTest {
             _h: h,
@@ -829,14 +830,11 @@ mod test {
 
         let proxy = Config1Proxy::new(&test.connection).await.unwrap();
         let daemon = Daemon1Proxy::new(&test.connection).await.unwrap();
-        let service = CecdService::new(
-            &test.connection,
-            &HdmiCecControl {
-                connection: test.connection.clone(),
-                proxy,
-                daemon,
-            },
-        )
+        let service = CecdService::new(&HdmiCecControl {
+            connection: test.connection.clone(),
+            proxy,
+            daemon,
+        })
         .await
         .unwrap();
         assert!(!service.manager.hdmi_cec_can_awaken().await.unwrap());
@@ -854,14 +852,11 @@ mod test {
 
         let proxy = Config1Proxy::new(&test.connection).await.unwrap();
         let daemon = Daemon1Proxy::new(&test.connection).await.unwrap();
-        let service = CecdService::new(
-            &test.connection,
-            &HdmiCecControl {
-                connection: test.connection.clone(),
-                proxy,
-                daemon,
-            },
-        )
+        let service = CecdService::new(&HdmiCecControl {
+            connection: test.connection.clone(),
+            proxy,
+            daemon,
+        })
         .await
         .unwrap();
         assert!(service.device.is_none());
@@ -887,14 +882,11 @@ mod test {
 
         let proxy = Config1Proxy::new(&test.connection).await.unwrap();
         let daemon = Daemon1Proxy::new(&test.connection).await.unwrap();
-        let service = CecdService::new(
-            &test.connection,
-            &HdmiCecControl {
-                connection: test.connection.clone(),
-                proxy,
-                daemon,
-            },
-        )
+        let service = CecdService::new(&HdmiCecControl {
+            connection: test.connection.clone(),
+            proxy,
+            daemon,
+        })
         .await;
         service.unwrap();
     }
@@ -919,14 +911,11 @@ mod test {
 
         let proxy = Config1Proxy::new(&test.connection).await.unwrap();
         let daemon = Daemon1Proxy::new(&test.connection).await.unwrap();
-        let service = CecdService::new(
-            &test.connection,
-            &HdmiCecControl {
-                connection: test.connection.clone(),
-                proxy,
-                daemon,
-            },
-        )
+        let service = CecdService::new(&HdmiCecControl {
+            connection: test.connection.clone(),
+            proxy,
+            daemon,
+        })
         .await
         .unwrap();
 
