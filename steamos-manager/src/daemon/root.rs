@@ -16,7 +16,7 @@ use tracing::subscriber::set_global_default;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
 
-use crate::daemon::{Daemon, DaemonCommand, DaemonContext, channel, system_connection};
+use crate::daemon::{Daemon, DaemonCommand, DaemonContext, channel, set_root, system_connection};
 use crate::ds_inhibit::Inhibitor;
 use crate::inputplumber::DeckService;
 use crate::manager::root::SteamOSManager;
@@ -170,6 +170,7 @@ pub async fn daemon() -> Result<()> {
     // This daemon is responsible for creating a dbus api that steam client can use to do various OS
     // level things. It implements com.steampowered.SteamOSManager1.RootManager interface
 
+    set_root(true);
     let stdout_log = fmt::layer();
     let subscriber = Registry::default()
         .with(stdout_log)

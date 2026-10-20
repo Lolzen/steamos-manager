@@ -88,6 +88,7 @@ pub fn start() -> TestHandle {
             device_config: Mutex::new(None),
             session_connection: Mutex::new(None),
             system_connection: Mutex::new(None),
+            is_root: sync::RwLock::new(false),
         });
         *lock.borrow_mut() = Some(test.clone());
         TestHandle { test }
@@ -126,6 +127,7 @@ pub struct Test {
     pub device_config: Mutex<Option<DeviceConfig>>,
     pub session_connection: Mutex<Option<Connection>>,
     pub system_connection: Mutex<Option<Connection>>,
+    pub is_root: sync::RwLock<bool>,
 }
 
 pub struct TestHandle {

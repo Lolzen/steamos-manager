@@ -25,7 +25,7 @@ use zbus::fdo::PeerProxy;
 
 use crate::daemon::config::write_state;
 use crate::daemon::{
-    Daemon, DaemonCommand, DaemonContext, channel, session_connection, system_connection,
+    Daemon, DaemonCommand, DaemonContext, channel, session_connection, set_root, system_connection,
 };
 use crate::job::{JobManager, JobManagerService};
 use crate::manager::user::create_interfaces;
@@ -192,6 +192,7 @@ pub async fn daemon() -> Result<()> {
     // This daemon is responsible for creating a dbus api that steam client can use to do various OS
     // level things. It implements com.steampowered.SteamOSManager1.Manager interface
 
+    set_root(false);
     let stdout_log = fmt::layer();
     let subscriber = Registry::default()
         .with(stdout_log)

@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt::Debug;
 use std::path::PathBuf;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use tokio::net::UnixDatagram;
 use tokio::signal::unix::{SignalKind, signal};
 #[cfg(not(test))]
@@ -38,6 +40,8 @@ pub use user::daemon as user;
 static SESSION_BUS: OnceCell<Connection> = OnceCell::const_new();
 #[cfg(not(test))]
 static SYSTEM_BUS: OnceCell<Connection> = OnceCell::const_new();
+#[cfg(not(test))]
+static IS_ROOT: OnceLock<bool> = OnceLock::new();
 
 pub(crate) trait DaemonContext: Sized {
     type State: for<'a> Deserialize<'a> + Serialize + Default + Debug;
@@ -310,4 +314,26 @@ pub async fn session_connection() -> Result<Connection> {
         .await
         .clone()
         .ok_or(anyhow!("No connection"))
+}
+
+#[cfg(not(test))]
+pub fn is_root() -> bool {
+    *IS_ROOT.get().unwrap()
+}
+
+#[cfg(test)]
+pub fn is_root() -> bool {
+    let handle = crate::testing::current();
+    *handle.is_root.try_read().unwrap()
+}
+
+#[cfg(not(test))]
+pub(in crate::daemon) fn set_root(root: bool) {
+    _ = IS_ROOT.set(root);
+}
+
+#[cfg(test)]
+pub(crate) fn set_root(root: bool) {
+    let handle = crate::testing::current();
+    *handle.is_root.try_write().unwrap() = root;
 }
