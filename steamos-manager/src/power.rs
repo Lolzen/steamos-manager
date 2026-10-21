@@ -30,6 +30,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinSet;
 use tracing::{debug, error, warn};
 use zbus::names::OwnedBusName;
+use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, ObjectServer, fdo};
 
@@ -872,7 +873,12 @@ impl CustomPlatformProfileDriver {
     ) -> Result<Self> {
         let proxy = if !is_root() {
             let connection = system_connection().await?;
-            Some(RootManagerProxy::new(&connection).await?)
+            Some(
+                RootManagerProxy::builder(&connection)
+                    .cache_properties(CacheProperties::No)
+                    .build()
+                    .await?,
+            )
         } else {
             None
         };

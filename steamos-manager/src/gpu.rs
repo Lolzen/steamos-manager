@@ -25,6 +25,7 @@ use tokio::sync::Mutex;
 #[cfg(not(test))]
 use tokio::sync::OnceCell;
 use tracing::{debug, error};
+use zbus::proxy::CacheProperties;
 
 use crate::daemon::is_root;
 use crate::hardware::{
@@ -886,7 +887,12 @@ impl DevfreqGpuPerformanceLevelDriver {
             .map_err(|message| anyhow!("Error opening sysfs file for reading: {message}"))?;
         let proxy = if !is_root() {
             let connection = system_connection().await?;
-            Some(RootManagerProxy::new(&connection).await?)
+            Some(
+                RootManagerProxy::builder(&connection)
+                    .cache_properties(CacheProperties::No)
+                    .build()
+                    .await?,
+            )
         } else {
             None
         };
