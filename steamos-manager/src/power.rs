@@ -43,12 +43,13 @@ use crate::hardware::{
     CustomPerformanceProfile, FanControlState, OptionalRangeConfig, PlatformProfileDriverConfig,
     device_config,
 };
+use crate::init::ServiceUnit;
 use crate::manager::MANAGER_PATH;
 use crate::manager::root::RootManagerProxy;
 use crate::manager::user::TdpLimit1;
 use crate::proxy::TdpLimit1Proxy;
 use crate::sysfs::{SysfsWritten, find_sysdir, sysfs_queued_write};
-use crate::systemd::{EnableState, JobMode, SystemdUnit};
+use crate::systemd::{EnableState, JobMode};
 #[cfg(test)]
 use crate::testing;
 use crate::{
@@ -115,7 +116,7 @@ pub enum CpuScheduler {
 }
 
 pub(crate) struct CpuSchedulerManager<'dbus> {
-    scx_unit: Option<SystemdUnit<'dbus>>,
+    scx_unit: Option<ServiceUnit<'dbus>>,
     current: CpuScheduler,
 }
 
@@ -404,11 +405,11 @@ pub(crate) async fn set_cpu_scaling_governor(governor: CPUScalingGovernor) -> Re
 impl<'dbus> CpuSchedulerManager<'dbus> {
     pub async fn new() -> Result<CpuSchedulerManager<'dbus>> {
         let connection = system_connection().await?;
-        // Try to create a SystemdUnit for scx.service; if systemd isn't available in the
+        // Try to create a ServiceUnit for scx.service; if systemd isn't available in the
         // test DBus environment, treat the service as not installed instead of failing.
-        let scx_unit = SystemdUnit::new(&connection, "scx.service")
+        let scx_unit = ServiceUnit::new(&connection, "scx.service")
             .await
-            .inspect_err(|e| warn!("Could not create SystemdUnit for scx.service: {e}"))
+            .inspect_err(|e| warn!("Could not create ServiceUnit for scx.service: {e}"))
             .ok();
 
         let current = if let Some(ref u) = scx_unit {

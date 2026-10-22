@@ -22,6 +22,7 @@ use zbus::Connection;
 
 use crate::cec::HdmiCecHardware;
 use crate::gpu::GpuPowerProfileDriverType;
+use crate::init::ServiceUnit;
 use crate::path;
 use crate::platform::{ServiceConfig, platform_config};
 use crate::power::{
@@ -29,7 +30,7 @@ use crate::power::{
     TdpLimitingMethod, find_hwmon,
 };
 use crate::process::{run_script, script_exit_code};
-use crate::systemd::{JobMode, SystemdUnit};
+use crate::systemd::JobMode;
 use crate::{try_read_to_string, write_synced};
 
 #[cfg(not(test))]
@@ -472,7 +473,7 @@ impl FanControl {
             .and_then(|config| config.fan_control.as_ref())
         {
             Some(ServiceConfig::Systemd(service)) => {
-                let jupiter_fan_control = SystemdUnit::new(&self.connection, service).await?;
+                let jupiter_fan_control = ServiceUnit::new(&self.connection, service).await?;
                 let active = jupiter_fan_control.active().await?;
                 Ok(if active.is_active() {
                     FanControlState::Os
@@ -501,7 +502,7 @@ impl FanControl {
             .and_then(|config| config.fan_control.as_ref())
         {
             Some(ServiceConfig::Systemd(service)) => {
-                let jupiter_fan_control = SystemdUnit::new(&self.connection, service).await?;
+                let jupiter_fan_control = ServiceUnit::new(&self.connection, service).await?;
                 match state {
                     FanControlState::Os => jupiter_fan_control.start(JobMode::Fail).await?,
                     FanControlState::Bios => jupiter_fan_control.stop(JobMode::Fail).await?,

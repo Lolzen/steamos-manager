@@ -29,11 +29,13 @@ pub use steamos_manager_proxy as proxy;
 
 mod ds_inhibit;
 mod error;
+mod init;
 mod inputplumber;
 mod job;
 mod manager;
 mod platform;
 mod process;
+mod runit;
 mod sls;
 mod sysfs;
 mod systemd;
