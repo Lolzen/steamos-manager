@@ -125,6 +125,11 @@ impl RunitService {
         self.sv("down", Some(ActiveState::Inactive)).await
     }
 
+    pub async fn restart(&self) -> Result<RunitJob> {
+        self.sv_supervised("restart", Some(ActiveState::Active))
+            .await
+    }
+
     pub async fn reload(&self) -> Result<RunitJob> {
         self.sv_supervised("hup", None).await
     }
@@ -367,6 +372,10 @@ pub(crate) mod test {
         assert_eq!(job.wait().await.unwrap(), JobResult::Done);
 
         let job = service.reload().await.unwrap();
+        assert_eq!(job.wait().await.unwrap(), JobResult::Done);
+
+        set_stat("foo", "run\n").await;
+        let job = service.restart().await.unwrap();
         assert_eq!(job.wait().await.unwrap(), JobResult::Done);
 
         h.test.set_process_cb(code).await;

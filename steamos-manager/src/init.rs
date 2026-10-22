@@ -92,6 +92,15 @@ impl<'dbus> ServiceUnit<'dbus> {
         })
     }
 
+    pub(crate) async fn restart(&self, job_mode: JobMode) -> Result<ServiceJob> {
+        Ok(match self {
+            ServiceUnit::Systemd(unit) => {
+                ServiceJob::Systemd(Box::new(unit.restart(job_mode).await?))
+            }
+            ServiceUnit::Runit(service) => ServiceJob::Runit(service.restart().await?),
+        })
+    }
+
     pub(crate) async fn reload(&self, job_mode: JobMode) -> Result<ServiceJob> {
         Ok(match self {
             ServiceUnit::Systemd(unit) => {
