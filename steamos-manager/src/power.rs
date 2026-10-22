@@ -882,13 +882,25 @@ impl CustomPlatformProfileDriver {
         } else {
             None
         };
-        Ok(Self {
+        let mut driver = CustomPlatformProfileDriver {
             profiles: profiles.clone(),
             current_profile,
             proxy,
             gpu_performance_level_driver: gpu_performance_level_driver().await.ok(),
             saved_gpu_performance_level: None,
-        })
+        };
+        driver.setup().await?;
+        Ok(driver)
+    }
+
+    async fn setup(&mut self) -> Result<()> {
+        if !is_root() {
+            return Ok(());
+        }
+        let Some(profile) = self.current_profile.take() else {
+            return Ok(());
+        };
+        self.set_platform_profile(&profile).await
     }
 }
 
