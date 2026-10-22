@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::time::Duration;
 use strum::{Display, EnumString};
 #[cfg(test)]
 use tokio::fs::{create_dir_all, write};
@@ -21,11 +22,13 @@ use tokio::fs::{read_dir, try_exists};
 use tokio::sync::OnceCell;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{broadcast, oneshot};
+use tokio::time::sleep;
 use tokio_stream::StreamExt;
-use tracing::debug;
+use tracing::{debug, error};
 use xdg::BaseDirectories;
 use zbus::proxy::PropertyChanged;
-use zbus::{Connection, fdo};
+use zbus::zvariant::OwnedObjectPath;
+use zbus::{Connection, fdo, proxy};
 
 use crate::daemon::user::{Command as DaemonCommand, UserCommand};
 use crate::init::{InitSystem, init_system};
@@ -41,6 +44,31 @@ const TEMPORARY_CONFIG_PATH_LEGACY: &str = "zzt-steamos-temp-login.conf";
 const SESSION_CHECK_PATH: &str = "holo.conf";
 const CONFIG_PATH: &str = "zz-holo-autologin.conf";
 const TEMPORARY_CONFIG_PATH: &str = "zzt-holo-temp-login.conf";
+
+// How long a logout without a user service manager waits, so that the caller
+// gets its reply before the session ends
+#[cfg(not(test))]
+const LOGOUT_DELAY: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const LOGOUT_DELAY: Duration = Duration::from_millis(200);
+
+#[proxy(
+    interface = "org.freedesktop.login1.Manager",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1"
+)]
+trait LoginManager {
+    #[zbus(name = "GetSessionByPID")]
+    fn get_session_by_pid(&self, pid: u32) -> zbus::Result<OwnedObjectPath>;
+}
+
+#[proxy(
+    interface = "org.freedesktop.login1.Session",
+    default_service = "org.freedesktop.login1"
+)]
+trait LoginSession {
+    fn terminate(&self) -> zbus::Result<()>;
+}
 
 #[cfg(not(test))]
 static CONFIG_PATHS: OnceCell<ConfigPaths> = OnceCell::const_new();
@@ -181,6 +209,28 @@ fn session_login_mode() -> LoginMode {
     login_mode_for_desktops(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref())
 }
 
+// Without a user service manager, the graphical session is the login session
+// steamos-manager runs in, so logging out terminates that session through
+// logind. That ends steamos-manager as well, so it happens a moment later,
+// once the caller has its reply; systemd, too, only queues the stop of
+// graphical-session.target.
+async fn logout_session() -> Result<()> {
+    let system = system_connection().await?;
+    let manager = LoginManagerProxy::new(&system).await?;
+    let session = manager.get_session_by_pid(std::process::id()).await?;
+    let session = LoginSessionProxy::builder(&system)
+        .path(session)?
+        .build()
+        .await?;
+    tokio::spawn(async move {
+        sleep(LOGOUT_DELAY).await;
+        if let Err(e) = session.terminate().await {
+            error!("Failed to end the login session: {e}");
+        }
+    });
+    Ok(())
+}
+
 pub(crate) async fn is_session_managed() -> Result<bool> {
     let paths = get_config_paths().await?;
     Ok(try_exists(&paths.check).await?)
@@ -306,6 +356,9 @@ impl SessionManager {
     }
 
     async fn logout(&self) -> Result<()> {
+        if init_system().await == InitSystem::Runit {
+            return logout_session().await;
+        }
         SystemdUnit::new(&self.connection, "graphical-session.target")
             .await?
             .stop(JobMode::Fail)
@@ -553,6 +606,33 @@ mod test {
 
         async fn set_default_session(&mut self, session: &str) {
             self.default_session = session.to_string();
+            self.notify.notify_one();
+        }
+    }
+
+    struct MockLoginManager;
+
+    #[interface(name = "org.freedesktop.login1.Manager")]
+    impl MockLoginManager {
+        #[zbus(name = "GetSessionByPID")]
+        async fn get_session_by_pid(&self, pid: u32) -> fdo::Result<OwnedObjectPath> {
+            if pid != std::process::id() {
+                return Err(fdo::Error::Failed(String::from("No session for PID")));
+            }
+            Ok(OwnedObjectPath::try_from("/org/freedesktop/login1/session/_31").unwrap())
+        }
+    }
+
+    #[derive(Default)]
+    struct MockLoginSession {
+        terminated: u32,
+        notify: Arc<Notify>,
+    }
+
+    #[interface(name = "org.freedesktop.login1.Session")]
+    impl MockLoginSession {
+        async fn terminate(&mut self) {
+            self.terminated += 1;
             self.notify.notify_one();
         }
     }
@@ -878,6 +958,82 @@ mod test {
             assert_eq!(unit.active, "inactive");
             unit.active = String::from("active");
         }
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_temporary_session_runit() {
+        let mut handle = testing::start();
+        let connection = handle.new_dbus().await.unwrap();
+        let (tx, rx) = channel(2);
+        connection
+            .request_name("com.steampowered.SteamOSManager1")
+            .await
+            .unwrap();
+        connection
+            .request_name("org.freedesktop.login1")
+            .await
+            .unwrap();
+        handle
+            .populate_connections(Connections::Both)
+            .await
+            .unwrap();
+        create_dir_all(path("/proc/1")).await.unwrap();
+        write(path("/proc/1/comm"), "runit\n").await.unwrap();
+
+        let manager = MockRootManager::default();
+        let notify = manager.notify.clone();
+        let session = MockLoginSession::default();
+        let terminated = session.notify.clone();
+
+        let object_server = connection.object_server();
+        object_server
+            .at("/com/steampowered/SteamOSManager1", manager)
+            .await
+            .unwrap();
+        object_server
+            .at("/org/freedesktop/login1", MockLoginManager)
+            .await
+            .unwrap();
+        object_server
+            .at("/org/freedesktop/login1/session/_31", session)
+            .await
+            .unwrap();
+
+        let root_manager = object_server
+            .interface::<_, MockRootManager>("/com/steampowered/SteamOSManager1")
+            .await
+            .unwrap();
+        let session = object_server
+            .interface::<_, MockLoginSession>("/org/freedesktop/login1/session/_31")
+            .await
+            .unwrap();
+
+        let task = spawn(session_relay(rx));
+
+        create_dir_all(path("/usr/share/wayland-sessions"))
+            .await
+            .unwrap();
+        write(
+            path("/usr/share/wayland-sessions/gamescope-wayland.desktop"),
+            b"",
+        )
+        .await
+        .unwrap();
+
+        let manager = SessionManager::new(tx).await.unwrap();
+
+        manager.switch_to_login_mode(LoginMode::Game).await.unwrap();
+        notify.notified().await;
+        assert_eq!(
+            root_manager.get().await.temporary_session,
+            "gamescope-wayland.desktop"
+        );
+        // The session ends only after the call has returned
+        assert_eq!(session.get().await.terminated, 0);
+        terminated.notified().await;
+        assert_eq!(session.get().await.terminated, 1);
 
         task.abort();
     }
