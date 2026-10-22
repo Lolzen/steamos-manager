@@ -32,9 +32,9 @@ use zbus::names::BusName;
 
 use crate::init::{InitSystem, ServiceUnit, init_system};
 use crate::process::{run_script, script_output};
-use crate::systemd::{JobMode, SystemdUnit, daemon_reload};
+use crate::systemd::{JobMode, daemon_reload};
 use crate::udev::single_poll;
-use crate::{path, read_config_directory, system_connection};
+use crate::{path, read_config_directory, system_connection, try_read_to_string};
 
 const OVERRIDE_CONTENTS: &str = "[Service]
 ExecStart=
@@ -42,6 +42,12 @@ ExecStart=/usr/lib/iwd/iwd -d
 ";
 const OVERRIDE_FOLDER: &str = "/etc/systemd/system/iwd.service.d";
 const OVERRIDE_PATH: &str = "/etc/systemd/system/iwd.service.d/99-valve-override.conf";
+
+// runit services on Void Linux read their options from a conf file next to
+// the run script; iwd's passes OPTS to iwd. The first line marks the file as
+// steamos-manager's, so an administrator's own file is never replaced.
+const RUNIT_OVERRIDE_PATH: &str = "/etc/sv/iwd/conf";
+const RUNIT_OVERRIDE_MARKER: &str = "# Written by steamos-manager for Wi-Fi debug mode";
 
 // Only use one path for output for now. If needed we can add a timestamp later
 // to have multiple files, etc.
@@ -127,7 +133,11 @@ struct NmWifiSettings {
     powersave: NmSettingWirelessPowersave,
 }
 
-pub(crate) async fn setup_iwd_config(want_override: bool) -> std::io::Result<()> {
+pub(crate) async fn setup_iwd_config(want_override: bool) -> Result<()> {
+    if init_system().await == InitSystem::Runit {
+        return setup_iwd_runit_config(want_override).await;
+    }
+
     // Copy override.conf file into place or out of place depending
     // on install value
 
@@ -136,27 +146,51 @@ pub(crate) async fn setup_iwd_config(want_override: bool) -> std::io::Result<()>
         // Make sure the folder exists
         fs::create_dir_all(path(OVERRIDE_FOLDER)).await?;
         // Then write the contents into the file
-        fs::write(path(OVERRIDE_PATH), OVERRIDE_CONTENTS).await
+        Ok(fs::write(path(OVERRIDE_PATH), OVERRIDE_CONTENTS).await?)
     } else {
         // Delete it
         match fs::remove_file(path(OVERRIDE_PATH)).await {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            res => res,
+            res => Ok(res?),
         }
+    }
+}
+
+// The runit counterpart of the systemd drop-in: iwd started with -d
+async fn setup_iwd_runit_config(want_override: bool) -> Result<()> {
+    let conf = path(RUNIT_OVERRIDE_PATH);
+    let ours = try_read_to_string(&conf)
+        .await?
+        .map(|contents| contents.starts_with(RUNIT_OVERRIDE_MARKER));
+    if want_override {
+        ensure!(
+            ours != Some(false),
+            "{} exists and is not steamos-manager's",
+            conf.display()
+        );
+        let contents = format!("{RUNIT_OVERRIDE_MARKER}\nOPTS=\"-d\"\n");
+        Ok(fs::write(&conf, contents).await?)
+    } else {
+        if ours == Some(true) {
+            fs::remove_file(&conf).await?;
+        }
+        Ok(())
     }
 }
 
 async fn restart_iwd() -> Result<()> {
     let connection = system_connection().await?;
 
-    // First reload systemd since we modified the config most likely
-    // otherwise we wouldn't be restarting iwd.
-    daemon_reload(&connection)
-        .await
-        .inspect_err(|message| error!("restart_iwd: reload systemd got an error: {message}"))?;
+    if init_system().await == InitSystem::Systemd {
+        // First reload systemd since we modified the config most likely
+        // otherwise we wouldn't be restarting iwd.
+        daemon_reload(&connection)
+            .await
+            .inspect_err(|message| error!("restart_iwd: reload systemd got an error: {message}"))?;
+    }
 
     // worked, now restart iwd
-    let unit = SystemdUnit::new(&connection, "iwd.service").await?;
+    let unit = ServiceUnit::new(&connection, "iwd.service").await?;
     unit.restart(JobMode::Fail)
         .await
         .inspect_err(|message| error!("restart_iwd: restart unit got an error: {message}"))?;
@@ -638,6 +672,41 @@ mod test {
         assert_eq!(
             read_to_string(path(OVERRIDE_PATH)).await.unwrap(),
             OVERRIDE_CONTENTS
+        );
+    }
+
+    #[tokio::test]
+    async fn test_setup_iwd_runit_config() {
+        let _h = testing::start();
+        boot_runit().await;
+        create_dir_all(path("/etc/sv/iwd"))
+            .await
+            .expect("create_dir_all");
+
+        // Remove with no file
+        assert!(setup_iwd_config(false).await.is_ok());
+
+        assert!(setup_iwd_config(true).await.is_ok());
+        let contents = read_to_string(path(RUNIT_OVERRIDE_PATH)).await.unwrap();
+        assert!(contents.starts_with(RUNIT_OVERRIDE_MARKER));
+        assert!(contents.contains("OPTS=\"-d\""));
+        // Again, over its own file
+        assert!(setup_iwd_config(true).await.is_ok());
+
+        assert!(setup_iwd_config(false).await.is_ok());
+        assert!(!try_exists(path(RUNIT_OVERRIDE_PATH)).await.unwrap());
+        // The systemd drop-in is not used
+        assert!(!try_exists(path(OVERRIDE_PATH)).await.unwrap());
+
+        // An administrator's own file stays as it is
+        write(path(RUNIT_OVERRIDE_PATH), "OPTS=\"--developer\"\n")
+            .await
+            .expect("write");
+        assert!(setup_iwd_config(true).await.is_err());
+        assert!(setup_iwd_config(false).await.is_ok());
+        assert_eq!(
+            read_to_string(path(RUNIT_OVERRIDE_PATH)).await.unwrap(),
+            "OPTS=\"--developer\"\n"
         );
     }
 
