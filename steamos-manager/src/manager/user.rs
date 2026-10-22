@@ -11,9 +11,12 @@ use async_trait::async_trait;
 use cecd_proxy::Config1Proxy;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs::try_exists;
+use tokio::fs::{read, try_exists};
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
@@ -42,6 +45,7 @@ use crate::gpu::{
 use crate::hardware::{
     SteamDeckVariant, device_config, device_type, device_variant, steam_deck_variant,
 };
+use crate::init::{InitSystem, init_system};
 use crate::job::JobManagerCommand;
 use crate::manager::root::{RootManagerProxy, SteamOSManagerSignals};
 use crate::manager::{MANAGER_PATH, RemoteInterface, RemoteInterfaceConfig, RemoteOwner};
@@ -311,12 +315,53 @@ async fn validate_header(header: &Header<'_>, connection: &Connection) -> fdo::R
             "Could not validate sender",
         )));
     };
-    if cgroup.contains("/app-steam-app") {
+    if cgroup.contains("/app-steam-app")
+        || (init_system().await == InitSystem::Runit && launched_by_steam(pid).await)
+    {
         return Err(fdo::Error::AuthFailed(String::from(
             "Cannot message SteamOS Manager from within a game",
         )));
     }
     Ok(())
+}
+
+// How far up the process tree a sender is followed
+const MAX_ANCESTORS: usize = 64;
+
+// Steam starts a game through its reaper ("reaper SteamLaunch AppId=..."),
+// which steam-launch-wrapper puts into an app-steam-app scope under systemd.
+// Without systemd there is no such scope, but the reaper is still there, and
+// as a subreaper it keeps every process of the game below it, so a game is
+// recognised by the reaper among its ancestors.
+async fn launched_by_steam(mut pid: u32) -> bool {
+    for _ in 0..MAX_ANCESTORS {
+        if pid <= 1 {
+            return false;
+        }
+        if let Ok(cmdline) = read(path(format!("/proc/{pid}/cmdline"))).await {
+            let mut args = cmdline.split(|&byte| byte == 0);
+            let exe = Path::new(OsStr::from_bytes(args.next().unwrap_or_default()));
+            if exe.file_name() == Some(OsStr::new("reaper"))
+                && args.next() == Some(b"SteamLaunch".as_slice())
+            {
+                return true;
+            }
+        }
+        let Ok(Some(stat)) = try_read_to_string(path(format!("/proc/{pid}/stat"))).await else {
+            return false;
+        };
+        // The command name in parentheses may contain anything; the parent's
+        // PID is the second field after it
+        let Some(ppid) = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse().ok())
+        else {
+            return false;
+        };
+        pid = ppid;
+    }
+    false
 }
 
 #[interface(name = "com.steampowered.SteamOSManager1.AmbientLightSensor1")]
@@ -2490,6 +2535,85 @@ mod test {
         write(
             path(format!("/proc/{pid}/cgroup")),
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-steam-app1-1234.scope",
+        )
+        .await
+        .unwrap();
+        assert!(proxy.wake_tv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_reaper_runit() {
+        let mut handle = testing::start();
+        let connection = handle.new_dbus().await.unwrap();
+        connection
+            .request_name("com.steampowered.CecDaemon1")
+            .await
+            .unwrap();
+        connection
+            .object_server()
+            .at("/com/steampowered/CecDaemon1/Daemon", MockCecdConfig1 {})
+            .await
+            .unwrap();
+
+        let new_conn = handle.new_connection().await.unwrap();
+        let proxy = MockCecdConfig1Proxy::builder(&new_conn)
+            .destination(
+                connection
+                    .unique_name()
+                    .ok_or(anyhow!("no unique name"))
+                    .unwrap(),
+            )
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await
+            .unwrap();
+        assert!(proxy.wake_tv().await.is_ok());
+        let pid = getpid();
+        create_dir_all(path("/proc/1")).await.unwrap();
+        write(path("/proc/1/comm"), "runit\n").await.unwrap();
+
+        // Not below a reaper: allowed
+        write(
+            path(format!("/proc/{pid}/stat")),
+            format!("{pid} (steam) S 1 {pid} {pid} 0 -1"),
+        )
+        .await
+        .unwrap();
+        assert!(proxy.wake_tv().await.is_ok());
+
+        // A parent that is not Steam's reaper: allowed
+        create_dir_all(path("/proc/4242")).await.unwrap();
+        write(path("/proc/4242/cmdline"), b"/usr/bin/reaper\0other\0")
+            .await
+            .unwrap();
+        write(path("/proc/4242/stat"), "4242 (reaper) S 1 1 1 0 -1")
+            .await
+            .unwrap();
+        write(
+            path(format!("/proc/{pid}/stat")),
+            format!("{pid} (game (x) 2) S 4242 {pid} {pid} 0 -1"),
+        )
+        .await
+        .unwrap();
+        assert!(proxy.wake_tv().await.is_ok());
+
+        // Below Steam's reaper, through another process: refused
+        write(
+            path("/proc/4242/cmdline"),
+            b"/home/deck/.local/share/Steam/steamrt64/reaper\0SteamLaunch\0AppId=1\0--\0game\0",
+        )
+        .await
+        .unwrap();
+        create_dir_all(path("/proc/4300")).await.unwrap();
+        write(path("/proc/4300/cmdline"), b"srt-bwrap\0")
+            .await
+            .unwrap();
+        write(path("/proc/4300/stat"), "4300 (srt-bwrap) S 4242 1 1 0 -1")
+            .await
+            .unwrap();
+        write(
+            path(format!("/proc/{pid}/stat")),
+            format!("{pid} (game) S 4300 {pid} {pid} 0 -1"),
         )
         .await
         .unwrap();
