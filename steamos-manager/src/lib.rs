@@ -41,6 +41,7 @@ mod sysfs;
 mod systemd;
 mod udev;
 mod uinput;
+mod user_service;
 
 pub mod cec;
 pub mod daemon;
