@@ -91,10 +91,32 @@ impl<'dbus> ServiceUnit<'dbus> {
             ServiceUnit::Runit(service) => ServiceJob::Runit(service.stop().await?),
         })
     }
+
+    pub(crate) async fn reload(&self, job_mode: JobMode) -> Result<ServiceJob> {
+        Ok(match self {
+            ServiceUnit::Systemd(unit) => {
+                ServiceJob::Systemd(Box::new(unit.reload(job_mode).await?))
+            }
+            ServiceUnit::Runit(service) => ServiceJob::Runit(service.reload().await?),
+        })
+    }
+
+    pub(crate) async fn enable(&self) -> Result<bool> {
+        match self {
+            ServiceUnit::Systemd(unit) => unit.enable().await,
+            ServiceUnit::Runit(service) => service.enable().await,
+        }
+    }
+
+    pub(crate) async fn disable(&self) -> Result<bool> {
+        match self {
+            ServiceUnit::Systemd(unit) => unit.disable().await,
+            ServiceUnit::Runit(service) => service.disable().await,
+        }
+    }
 }
 
 impl ServiceJob {
-    #[allow(unused)]
     pub(crate) async fn wait(self) -> Result<JobResult> {
         match self {
             ServiceJob::Systemd(waiter) => waiter.wait().await,

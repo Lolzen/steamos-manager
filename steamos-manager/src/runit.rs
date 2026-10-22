@@ -125,12 +125,10 @@ impl RunitService {
         self.sv("down", Some(ActiveState::Inactive)).await
     }
 
-    #[allow(unused)]
     pub async fn reload(&self) -> Result<RunitJob> {
         self.sv_supervised("hup", None).await
     }
 
-    #[allow(unused)]
     pub async fn enable(&self) -> Result<bool> {
         if self.is_linked().await? {
             return Ok(false);
@@ -139,7 +137,6 @@ impl RunitService {
         Ok(true)
     }
 
-    #[allow(unused)]
     pub async fn disable(&self) -> Result<bool> {
         match remove_file(self.link()).await {
             Ok(()) => Ok(true),
@@ -205,7 +202,7 @@ async fn active_state(definition: &Path) -> Result<ActiveState> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
     use crate::process::test::{code, ok};
     use crate::testing;
@@ -214,7 +211,7 @@ mod test {
     use std::fs::File;
     use tokio::fs::{create_dir_all, write};
 
-    async fn define(name: &str) {
+    pub(crate) async fn define(name: &str) {
         let definition = path(SERVICE_DEFINITIONS).join(name);
         create_dir_all(&definition).await.expect("create_dir_all");
         write(definition.join("run"), "#!/bin/sh\n")
@@ -222,7 +219,7 @@ mod test {
             .expect("write");
     }
 
-    async fn link(name: &str) {
+    pub(crate) async fn link(name: &str) {
         create_dir_all(path(DEFAULT_SERVICE_DIRECTORY))
             .await
             .expect("create_dir_all");
@@ -236,7 +233,7 @@ mod test {
 
     // Stands in for runsv(8): the supervise directory with the ok FIFO held
     // open for reading, as long as the returned file lives
-    async fn supervise(name: &str, stat: &str) -> File {
+    pub(crate) async fn supervise(name: &str, stat: &str) -> File {
         let supervise = path(SERVICE_DEFINITIONS).join(name).join("supervise");
         create_dir_all(&supervise).await.expect("create_dir_all");
         mkfifo(&supervise.join("ok"), Mode::S_IRUSR | Mode::S_IWUSR).expect("mkfifo");
@@ -248,7 +245,7 @@ mod test {
             .expect("open")
     }
 
-    async fn set_stat(name: &str, stat: &str) {
+    pub(crate) async fn set_stat(name: &str, stat: &str) {
         let supervise = path(SERVICE_DEFINITIONS).join(name).join("supervise");
         write(supervise.join("stat"), stat).await.expect("write");
     }
