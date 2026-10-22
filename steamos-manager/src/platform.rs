@@ -19,9 +19,9 @@ use tokio::fs::{metadata, read_to_string};
 use tokio::sync::OnceCell;
 use tokio::task::spawn_blocking;
 
+use crate::init::ServiceUnit;
 #[cfg(test)]
 use crate::path;
-use crate::systemd::SystemdUnit;
 use crate::{session_connection, system_connection};
 
 #[cfg(not(test))]
@@ -104,7 +104,7 @@ impl ServiceConfig {
     pub(crate) async fn is_valid(&self, root: bool) -> Result<bool> {
         match self {
             ServiceConfig::Systemd(unit) => {
-                SystemdUnit::exists(
+                ServiceUnit::exists(
                     &if root {
                         system_connection().await
                     } else {

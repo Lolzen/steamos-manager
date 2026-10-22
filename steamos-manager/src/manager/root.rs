@@ -30,6 +30,7 @@ use crate::hardware::{
     FactoryResetKind, FanControl, FanControlState, SteamDeckVariant, device_config,
     steam_deck_variant,
 };
+use crate::init::ServiceUnit;
 use crate::job::JobManager;
 use crate::platform::{ServiceConfig, platform_config};
 use crate::power::{
@@ -40,7 +41,7 @@ use crate::power::{
 use crate::process::{run_script, script_exit_code, script_output};
 use crate::session::root::{clean_temporary_sessions, set_default_session, set_temporary_session};
 use crate::sysfs::SysfsWritten;
-use crate::systemd::{JobMode, SystemdUnit};
+use crate::systemd::JobMode;
 use crate::wifi::{
     WifiBackend, WifiDebugMode, WifiPowerManagement, extract_wifi_trace, generate_wifi_dump,
     set_wifi_backend, set_wifi_debug_mode, set_wifi_power_management_state,
@@ -234,10 +235,10 @@ impl SteamOSManager {
             .and_then(|config| config.firmware_debug.as_ref())
         {
             Some(ServiceConfig::Systemd(service)) => {
-                let systemd_service = SystemdUnit::new(&self.connection, service)
+                let unit = ServiceUnit::new(&self.connection, service)
                     .await
                     .map_err(to_zbus_fdo_error)?;
-                let active = systemd_service.active().await.map_err(to_zbus_fdo_error)?;
+                let active = unit.active().await.map_err(to_zbus_fdo_error)?;
                 Ok(active.is_active() as u32)
             }
             Some(ServiceConfig::Script { status, .. }) => {
@@ -269,13 +270,13 @@ impl SteamOSManager {
             .and_then(|config| config.firmware_debug.as_ref())
         {
             Some(ServiceConfig::Systemd(service)) => {
-                let systemd_service = SystemdUnit::new(&self.connection, service)
+                let unit = ServiceUnit::new(&self.connection, service)
                     .await
                     .map_err(to_zbus_error)?;
                 if enable {
-                    systemd_service.start(JobMode::Fail).await
+                    unit.start(JobMode::Fail).await
                 } else {
-                    systemd_service.stop(JobMode::Fail).await
+                    unit.stop(JobMode::Fail).await
                 }
                 .map_err(to_zbus_error)?;
             }
