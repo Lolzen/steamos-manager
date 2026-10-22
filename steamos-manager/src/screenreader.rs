@@ -32,8 +32,8 @@ use zbus::Connection;
 
 #[cfg(test)]
 use crate::path;
-use crate::systemd::{JobMode, SystemdUnit};
 use crate::uinput::UInputDevice;
+use crate::user_service::{ChildService, UserService};
 
 #[cfg(test)]
 const TEST_ORCA_SETTINGS: &str = "../data/test-orca-settings.conf";
@@ -58,6 +58,7 @@ const ENABLE_SETTING: &str = "enableSpeech";
 const A11Y_SETTING: &str = "org.gnome.desktop.a11y.applications";
 const SCREEN_READER_SETTING: &str = "screen-reader-enabled";
 const KEYBOARD_NAME: &str = "steamos-manager";
+const ORCA_PATH: &str = "/usr/bin/orca";
 
 const PITCH_DEFAULT: f64 = 5.0;
 const RATE_DEFAULT: f64 = 50.0;
@@ -97,7 +98,7 @@ pub enum ScreenReaderAction {
 }
 
 pub(crate) struct OrcaManager<'dbus> {
-    orca_unit: SystemdUnit<'dbus>,
+    orca: UserService<'dbus>,
     rate: f64,
     pitch: f64,
     volume: f64,
@@ -117,7 +118,7 @@ fn default_map() -> Value {
 impl<'dbus> OrcaManager<'dbus> {
     pub async fn new(connection: &Connection) -> Result<OrcaManager<'dbus>> {
         let mut manager = OrcaManager {
-            orca_unit: SystemdUnit::new(connection, "orca.service").await?,
+            orca: UserService::new(connection, "orca.service", Self::orca_child()).await?,
             rate: RATE_DEFAULT,
             pitch: PITCH_DEFAULT,
             volume: VOLUME_DEFAULT,
@@ -636,24 +637,31 @@ impl<'dbus> OrcaManager<'dbus> {
         Ok(write(path, data.as_bytes()).await?)
     }
 
-    async fn restart_orca(&self) -> Result<()> {
-        trace!("Restarting orca...");
-        self.orca_unit.restart(JobMode::Fail).await?;
-        Ok(())
+    // What orca.service runs, for systems without a user service manager
+    fn orca_child() -> ChildService {
+        let child = ChildService::new(ORCA_PATH);
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(dir) => child.environment_file(PathBuf::from(dir).join("gamescope-environment")),
+            None => child,
+        }
     }
 
-    pub async fn stop_orca(&self) -> Result<()> {
+    async fn restart_orca(&mut self) -> Result<()> {
+        trace!("Restarting orca...");
+        self.orca.restart().await
+    }
+
+    pub async fn stop_orca(&mut self) -> Result<()> {
         trace!("Stopping orca...");
-        self.orca_unit.stop(JobMode::Fail).await?;
-        Ok(())
+        self.orca.stop().await
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::systemd::ActiveState;
     use crate::systemd::test::{MockManager, MockUnit};
+    use crate::systemd::{ActiveState, SystemdUnit};
     use crate::testing;
     use input_linux::{Key, KeyState};
     use std::time::Duration;

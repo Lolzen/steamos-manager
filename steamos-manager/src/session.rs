@@ -28,6 +28,7 @@ use zbus::proxy::PropertyChanged;
 use zbus::{Connection, fdo};
 
 use crate::daemon::user::{Command as DaemonCommand, UserCommand};
+use crate::init::{InitSystem, init_system};
 use crate::manager::root::RootManagerProxy;
 use crate::systemd::{ActiveState, JobMode, SystemdUnit};
 use crate::{Service, path, session_connection, system_connection};
@@ -157,6 +158,29 @@ pub(crate) enum SessionManagerMessage {
     LoginModeChanged(LoginMode),
 }
 
+// Without a user service manager, as on runit systems, steamos-manager is
+// started by the login session it serves and ends with it, so the session's
+// desktop names give the login mode and cannot change while it runs:
+// switching modes logs out. The display manager sets XDG_CURRENT_DESKTOP from
+// the session file's DesktopNames, which name gamescope for a gamescope
+// session.
+fn login_mode_for_desktops(desktops: Option<&str>) -> LoginMode {
+    match desktops {
+        Some(desktops)
+            if desktops
+                .split(':')
+                .any(|desktop| desktop.eq_ignore_ascii_case("gamescope")) =>
+        {
+            LoginMode::Game
+        }
+        _ => LoginMode::Desktop,
+    }
+}
+
+fn session_login_mode() -> LoginMode {
+    login_mode_for_desktops(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref())
+}
+
 pub(crate) async fn is_session_managed() -> Result<bool> {
     let paths = get_config_paths().await?;
     Ok(try_exists(&paths.check).await?)
@@ -272,6 +296,9 @@ impl SessionManager {
     }
 
     pub(crate) async fn current_login_mode(&self) -> Result<LoginMode> {
+        if init_system().await == InitSystem::Runit {
+            return Ok(session_login_mode());
+        }
         if self.unit_is_active("gamescope-session.service").await? {
             return Ok(LoginMode::Game);
         }
@@ -433,6 +460,15 @@ impl Service for SessionManagerService {
     const NAME: &'static str = "session-manager";
 
     async fn run(&mut self) -> Result<()> {
+        if init_system().await == InitSystem::Runit {
+            self.current_mode = session_login_mode();
+            let _ = self
+                .channel
+                .send(SessionManagerMessage::LoginModeChanged(self.current_mode));
+            // Fixed for as long as this session lasts
+            return std::future::pending().await;
+        }
+
         let unit = SystemdUnit::new(&self.session, "gamescope-session.service").await?;
 
         let stream = unit
@@ -519,6 +555,18 @@ mod test {
             self.default_session = session.to_string();
             self.notify.notify_one();
         }
+    }
+
+    #[test]
+    fn test_login_mode_for_desktops() {
+        assert_eq!(login_mode_for_desktops(Some("gamescope")), LoginMode::Game);
+        assert_eq!(
+            login_mode_for_desktops(Some("KDE:gamescope")),
+            LoginMode::Game
+        );
+        assert_eq!(login_mode_for_desktops(Some("KDE")), LoginMode::Desktop);
+        assert_eq!(login_mode_for_desktops(Some("")), LoginMode::Desktop);
+        assert_eq!(login_mode_for_desktops(None), LoginMode::Desktop);
     }
 
     #[test]
