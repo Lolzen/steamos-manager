@@ -8,7 +8,9 @@
 use anyhow::{Result, bail, ensure};
 use config::builder::AsyncState;
 use config::{ConfigBuilder, FileFormat};
+use nix::sys::signal::{Signal, kill};
 use nix::sys::stat::{self, Mode};
+use nix::unistd::Pid;
 use num_enum::TryFromPrimitive;
 use std::ffi::OsStr;
 use std::fs::Permissions;
@@ -21,10 +23,14 @@ use strum::{Display, EnumString};
 use tempfile::Builder as TempFileBuilder;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::sleep;
-use tracing::{debug, error};
+use tokio::time::{Instant, sleep};
+use tracing::{debug, error, warn};
 use udev::{Event, EventType};
+use zbus::Connection;
+use zbus::fdo::DBusProxy;
+use zbus::names::BusName;
 
+use crate::init::{InitSystem, ServiceUnit, init_system};
 use crate::process::{run_script, script_output};
 use crate::systemd::{JobMode, SystemdUnit, daemon_reload};
 use crate::udev::single_poll;
@@ -42,6 +48,10 @@ const OVERRIDE_PATH: &str = "/etc/systemd/system/iwd.service.d/99-valve-override
 const TRACE_CMD_PATH: &str = "/usr/bin/trace-cmd";
 
 const MIN_BUFFER_SIZE: u32 = 100;
+
+// How long a backend may take to exit; iwd removes the interfaces it created
+// before it does
+const BACKEND_EXIT_TIMEOUT: Duration = Duration::from_secs(7);
 
 const WIFI_BACKEND_PATHS: &[&str] = &[
     "/usr/lib/NetworkManager/conf.d",
@@ -335,6 +345,70 @@ async fn get_nm_settings() -> Result<NmWifiSettings> {
     Ok(NmWifiSettings { powersave, backend })
 }
 
+fn backend_unit_name(backend: WifiBackend) -> &'static str {
+    match backend {
+        WifiBackend::Iwd => "iwd.service",
+        WifiBackend::WPASupplicant => "wpa_supplicant.service",
+    }
+}
+
+fn backend_bus_name(backend: WifiBackend) -> &'static str {
+    match backend {
+        WifiBackend::Iwd => "net.connman.iwd",
+        WifiBackend::WPASupplicant => "fi.w1.wpa_supplicant1",
+    }
+}
+
+// Under systemd, a backend NetworkManager pulls in through D-Bus activation
+// runs as its unit, so stopping the unit stops it, and a backend that is not
+// activatable is pulled in by its unit. runit does neither: a backend that
+// dbus-daemon activated is not a runit service, and one that D-Bus cannot
+// activate (Void builds iwd without its systemd service, which brings the
+// activation file) has to be started by runit. So the old backend's process
+// is terminated through its bus name, and the new backend's runit service is
+// enabled if D-Bus cannot activate it.
+async fn switch_runit_backend(
+    connection: &Connection,
+    old_backend: WifiBackend,
+    backend: WifiBackend,
+) -> Result<()> {
+    let dbus = DBusProxy::new(connection).await?;
+
+    let old_name = BusName::try_from(backend_bus_name(old_backend))?;
+    match dbus.get_connection_unix_process_id(old_name.clone()).await {
+        Ok(pid) => {
+            debug!("Terminating {old_backend} (pid {pid}), started outside of runit");
+            kill(Pid::from_raw(i32::try_from(pid)?), Signal::SIGTERM)?;
+            let deadline = Instant::now() + BACKEND_EXIT_TIMEOUT;
+            while dbus.name_has_owner(old_name.clone()).await? {
+                if Instant::now() >= deadline {
+                    warn!("{old_backend} did not exit in time");
+                    break;
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+        Err(zbus::fdo::Error::NameHasNoOwner(_)) => (),
+        Err(e) => return Err(e.into()),
+    }
+
+    let name = backend_bus_name(backend);
+    let activatable = dbus
+        .list_activatable_names()
+        .await?
+        .iter()
+        .any(|n| n.as_str() == name);
+    let unit_name = backend_unit_name(backend);
+    if !activatable && ServiceUnit::exists(connection, unit_name).await? {
+        // runsvdir(8) starts it once it sees the link
+        ServiceUnit::new(connection, unit_name)
+            .await?
+            .enable()
+            .await?;
+    }
+    Ok(())
+}
+
 async fn set_nm_settings(settings: NmWifiSettings, restart: bool) -> Result<()> {
     let NmWifiSettings { powersave, backend } = settings;
     let powersave = powersave as i64;
@@ -344,17 +418,14 @@ async fn set_nm_settings(settings: NmWifiSettings, restart: bool) -> Result<()> 
     fs::write(path(WIFI_BACKEND_FILE), contents).await?;
 
     // Stop the other backend and restart NM
-    let unit = SystemdUnit::new(&connection, "NetworkManager.service").await?;
+    let unit = ServiceUnit::new(&connection, "NetworkManager.service").await?;
 
     if restart {
-        let backend_unit = SystemdUnit::new(
-            &connection,
-            match backend {
-                WifiBackend::Iwd => "wpa_supplicant.service",
-                WifiBackend::WPASupplicant => "iwd.service",
-            },
-        )
-        .await?;
+        let old_backend = match backend {
+            WifiBackend::Iwd => WifiBackend::WPASupplicant,
+            WifiBackend::WPASupplicant => WifiBackend::Iwd,
+        };
+        let backend_unit = ServiceUnit::new(&connection, backend_unit_name(old_backend)).await?;
 
         unit.stop(JobMode::Fail).await?.wait().await?;
         // These systemd units are not set to enabled permanently, NetworkManager will pull them as necessary
@@ -363,7 +434,13 @@ async fn set_nm_settings(settings: NmWifiSettings, restart: bool) -> Result<()> 
 
         // Restart NetworkManager even if this fails, otherwise the system is
         // left with no networking at all
-        let res = ensure_default_interface().await;
+        let res = async {
+            if init_system().await == InitSystem::Runit {
+                switch_runit_backend(&connection, old_backend, backend).await?;
+            }
+            ensure_default_interface().await
+        }
+        .await;
         unit.start(JobMode::Fail).await?;
         res?;
     } else {
@@ -511,6 +588,7 @@ mod test {
     use std::ffi::OsStr;
     use tokio::fs::{create_dir_all, read_to_string, remove_dir, try_exists, write};
 
+    use crate::runit::test::{define, link, supervise};
     use crate::systemd::test::{MockManager, MockUnit};
     use crate::testing::Connections;
     use crate::{enum_on_off, enum_roundtrip, testing};
@@ -898,6 +976,139 @@ mod test {
 
         // NetworkManager should still be brought back up
         assert_eq!(network_manager.get().await.active, "active");
+    }
+
+    fn sv_iw_output(executable: &OsStr, args: &[&OsStr]) -> Result<(i32, String)> {
+        match executable.to_str() {
+            // sv(8)
+            Some("sv") => Ok((0, String::new())),
+            Some("/usr/bin/iw") if args.len() == 1 && args[0] == "dev" => {
+                Ok((0, String::from("Interface wlan0")))
+            }
+            _ => bail!("Unknown command"),
+        }
+    }
+
+    async fn boot_runit() {
+        create_dir_all(path("/proc/1"))
+            .await
+            .expect("create_dir_all");
+        write(path("/proc/1/comm"), "runit\n").await.expect("write");
+    }
+
+    #[tokio::test]
+    async fn test_set_nm_settings_runit_to_iwd() {
+        let mut h = testing::start();
+        let _connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        h.test.set_process_cb(sv_iw_output).await;
+        boot_runit().await;
+
+        define("NetworkManager").await;
+        link("NetworkManager").await;
+        let _runsv = supervise("NetworkManager", "run\n").await;
+        define("iwd").await;
+        create_dir_all(path(WIFI_BACKEND_PATHS.last().unwrap()))
+            .await
+            .expect("create_dir_all");
+
+        set_nm_settings(
+            NmWifiSettings {
+                backend: WifiBackend::Iwd,
+                powersave: NmSettingWirelessPowersave::Disable,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            get_nm_settings().await.unwrap(),
+            NmWifiSettings {
+                backend: WifiBackend::Iwd,
+                powersave: NmSettingWirelessPowersave::Disable,
+            }
+        );
+        // iwd cannot be activated through D-Bus here, so runit starts it
+        assert!(try_exists(path("/var/service/iwd")).await.unwrap());
+        assert!(
+            try_exists(path("/var/service/NetworkManager"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nm_settings_runit_to_wpa_supplicant() {
+        let mut h = testing::start();
+        let _connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        h.test.set_process_cb(sv_iw_output).await;
+        boot_runit().await;
+
+        define("NetworkManager").await;
+        link("NetworkManager").await;
+        let _nm = supervise("NetworkManager", "run\n").await;
+        define("iwd").await;
+        link("iwd").await;
+        let _iwd = supervise("iwd", "run\n").await;
+        create_dir_all(path(WIFI_BACKEND_PATHS.last().unwrap()))
+            .await
+            .expect("create_dir_all");
+
+        set_nm_settings(
+            NmWifiSettings {
+                backend: WifiBackend::WPASupplicant,
+                powersave: NmSettingWirelessPowersave::Disable,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            get_wifi_backend().await.unwrap(),
+            WifiBackend::WPASupplicant
+        );
+        // The old backend is no longer started at boot
+        assert!(!try_exists(path("/var/service/iwd")).await.unwrap());
+        // No runit service for wpa_supplicant here, so nothing is linked
+        assert!(
+            !try_exists(path("/var/service/wpa_supplicant"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nm_settings_runit_no_restart() {
+        let mut h = testing::start();
+        let _connection = h.new_dbus().await.expect("dbus");
+        h.populate_connections(Connections::System).await.unwrap();
+        h.test.set_process_cb(sv_iw_output).await;
+        boot_runit().await;
+
+        define("NetworkManager").await;
+        link("NetworkManager").await;
+        let _runsv = supervise("NetworkManager", "run\n").await;
+        create_dir_all(path(WIFI_BACKEND_PATHS.last().unwrap()))
+            .await
+            .expect("create_dir_all");
+
+        set_nm_settings(
+            NmWifiSettings {
+                backend: WifiBackend::WPASupplicant,
+                powersave: NmSettingWirelessPowersave::Enable,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            read_to_string(path(WIFI_BACKEND_FILE)).await.unwrap(),
+            "[connection]\nwifi.powersave=3\n[device]\nwifi.backend=wpa_supplicant\n"
+        );
     }
 
     #[tokio::test]
