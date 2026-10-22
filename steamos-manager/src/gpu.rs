@@ -896,7 +896,7 @@ impl DevfreqGpuPerformanceLevelDriver {
         } else {
             None
         };
-        Ok(Self {
+        let driver = DevfreqGpuPerformanceLevelDriver {
             sysfs_path: sysfs_path.clone(),
             available_freqs: available_freqs
                 .split_whitespace()
@@ -907,7 +907,27 @@ impl DevfreqGpuPerformanceLevelDriver {
             proxy,
             saved_manual_clocks: None,
             limits: GpuClockLimits::get_config_limits().await?,
-        })
+        };
+        driver.setup().await?;
+        Ok(driver)
+    }
+
+    async fn setup(&self) -> Result<()> {
+        if !is_root() {
+            return Ok(());
+        }
+        let limits = self
+            .limits
+            .get(&DevfreqPerformanceLevel::Auto)
+            .cloned()
+            .unwrap_or_default();
+        let min = limits.min.unwrap_or(self.min_freq());
+        let max = limits.max.unwrap_or(self.max_freq());
+        self.write_value(Self::MINIMUM_FREQ, &(min.to_string() + "000000"))
+            .await?;
+        self.write_value(Self::MAXIMUM_FREQ, &(max.to_string() + "000000"))
+            .await?;
+        Ok(())
     }
 
     async fn write_value(&self, file: &str, value: &str) -> Result<()> {
