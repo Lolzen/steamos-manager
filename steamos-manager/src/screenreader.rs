@@ -637,9 +637,10 @@ impl<'dbus> OrcaManager<'dbus> {
         Ok(write(path, data.as_bytes()).await?)
     }
 
-    // What orca.service runs, for systems without a user service manager
+    // What orca.service runs (Restart=on-failure), for systems without a
+    // user service manager
     fn orca_child() -> ChildService {
-        let child = ChildService::new(ORCA_PATH);
+        let child = ChildService::new(ORCA_PATH).restart_on_failure();
         match std::env::var_os("XDG_RUNTIME_DIR") {
             Some(dir) => child.environment_file(PathBuf::from(dir).join("gamescope-environment")),
             None => child,

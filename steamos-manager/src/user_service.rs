@@ -9,16 +9,19 @@
 //! them itself as child processes, the way their unit runs them: the same
 //! command, with the variables of the same environment file.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::select;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep, timeout};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zbus::Connection;
 
@@ -71,15 +74,40 @@ impl<'dbus> UserService<'dbus> {
     }
 }
 
+// Restart=on-failure with systemd's defaults: RestartSec=100ms, at most
+// StartLimitBurst=5 starts within StartLimitIntervalSec=10s
+#[cfg(not(test))]
+const RESTART_DELAY: Duration = Duration::from_millis(100);
+#[cfg(test)]
+const RESTART_DELAY: Duration = Duration::from_millis(10);
+const START_LIMIT_BURST: usize = 5;
+const START_LIMIT_INTERVAL: Duration = Duration::from_secs(10);
+
 struct Running {
-    pid: Pid,
-    exited: JoinHandle<()>,
+    stop: CancellationToken,
+    supervisor: JoinHandle<()>,
 }
 
 pub(crate) struct ChildService {
     executable: PathBuf,
     environment_file: Option<PathBuf>,
+    restart_on_failure: bool,
     running: Option<Running>,
+}
+
+// As Restart=on-failure: an unclean exit code or a signal other than the
+// clean ones (SIGHUP, SIGINT, SIGTERM, SIGPIPE)
+fn failed(status: ExitStatus) -> bool {
+    match status.signal() {
+        Some(signal) => ![
+            Signal::SIGHUP as i32,
+            Signal::SIGINT as i32,
+            Signal::SIGTERM as i32,
+            Signal::SIGPIPE as i32,
+        ]
+        .contains(&signal),
+        None => !status.success(),
+    }
 }
 
 impl ChildService {
@@ -87,14 +115,21 @@ impl ChildService {
         ChildService {
             executable: executable.as_ref().to_path_buf(),
             environment_file: None,
+            restart_on_failure: false,
             running: None,
         }
     }
 
-    /// Like systemd's `EnvironmentFile=-<file>`: read when the service
+    /// Like systemd's `EnvironmentFile=-<file>`: read each time the service
     /// starts, skipped if it does not exist
     pub(crate) fn environment_file(mut self, file: impl AsRef<Path>) -> ChildService {
         self.environment_file = Some(file.as_ref().to_path_buf());
+        self
+    }
+
+    /// Like systemd's `Restart=on-failure`
+    pub(crate) fn restart_on_failure(mut self) -> ChildService {
+        self.restart_on_failure = true;
         self
     }
 
@@ -102,29 +137,87 @@ impl ChildService {
     fn is_running(&self) -> bool {
         self.running
             .as_ref()
-            .is_some_and(|running| !running.exited.is_finished())
+            .is_some_and(|running| !running.supervisor.is_finished())
     }
 
-    async fn start(&mut self) -> Result<()> {
-        let environment = match &self.environment_file {
+    async fn spawn(executable: &Path, environment_file: Option<&Path>) -> Result<Child> {
+        let environment = match environment_file {
             Some(file) => read_environment_file(file).await?,
             None => HashMap::new(),
         };
-        let mut child = Command::new(path(&self.executable))
+        let child = Command::new(path(executable))
             .envs(environment)
             .stdin(Stdio::null())
             .spawn()?;
-        let pid = child
-            .id()
-            .ok_or(anyhow!("{} exited at once", self.executable.display()))?;
-        debug!("Started {} as {pid}", self.executable.display());
-        let exited = tokio::spawn(async move {
-            let _ = child.wait().await;
+        debug!("Started {} as {:?}", executable.display(), child.id());
+        Ok(child)
+    }
+
+    // SIGTERM, and SIGKILL if it does not exit in time, as systemd stops a
+    // service; the child is reaped here
+    async fn terminate(executable: &Path, child: &mut Child) {
+        if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+        }
+        if timeout(STOP_TIMEOUT, child.wait()).await.is_err() {
+            warn!(
+                "{} did not exit after SIGTERM, killing it",
+                executable.display()
+            );
+            let _ = child.kill().await;
+        }
+    }
+
+    async fn start(&mut self) -> Result<()> {
+        // The first start reports its errors to the caller; restarts after a
+        // failure happen in the supervising task
+        let mut child = Self::spawn(&self.executable, self.environment_file.as_deref()).await?;
+        let stop = CancellationToken::new();
+
+        let executable = self.executable.clone();
+        let environment_file = self.environment_file.clone();
+        let restart_on_failure = self.restart_on_failure;
+        let task_stop = stop.clone();
+        let supervisor = tokio::spawn(async move {
+            let mut starts = VecDeque::from([Instant::now()]);
+            loop {
+                let status = select! {
+                    status = child.wait() => status,
+                    () = task_stop.cancelled() => {
+                        Self::terminate(&executable, &mut child).await;
+                        return;
+                    }
+                };
+                let Ok(status) = status else {
+                    return;
+                };
+                if !restart_on_failure || !failed(status) {
+                    return;
+                }
+                starts.retain(|start| start.elapsed() < START_LIMIT_INTERVAL);
+                if starts.len() >= START_LIMIT_BURST {
+                    warn!(
+                        "{} failed too often, not restarting it",
+                        executable.display()
+                    );
+                    return;
+                }
+                warn!("{} failed ({status}), restarting it", executable.display());
+                select! {
+                    () = sleep(RESTART_DELAY) => (),
+                    () = task_stop.cancelled() => return,
+                }
+                child = match Self::spawn(&executable, environment_file.as_deref()).await {
+                    Ok(child) => child,
+                    Err(e) => {
+                        warn!("Could not restart {}: {e}", executable.display());
+                        return;
+                    }
+                };
+                starts.push_back(Instant::now());
+            }
         });
-        self.running = Some(Running {
-            pid: Pid::from_raw(i32::try_from(pid)?),
-            exited,
-        });
+        self.running = Some(Running { stop, supervisor });
         Ok(())
     }
 
@@ -137,18 +230,9 @@ impl ChildService {
         let Some(mut running) = self.running.take() else {
             return Ok(());
         };
-        if running.exited.is_finished() {
-            return Ok(());
-        }
-        kill(running.pid, Signal::SIGTERM)?;
-        if timeout(STOP_TIMEOUT, &mut running.exited).await.is_err() {
-            warn!(
-                "{} did not exit after SIGTERM, killing it",
-                self.executable.display()
-            );
-            kill(running.pid, Signal::SIGKILL)?;
-            running.exited.await?;
-        }
+        // The supervisor stops restarting, terminates the child and reaps it
+        running.stop.cancel();
+        (&mut running.supervisor).await?;
         Ok(())
     }
 }
@@ -181,7 +265,7 @@ mod test {
     use crate::testing;
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
-    use tokio::fs::{create_dir_all, read_to_string, set_permissions, write};
+    use tokio::fs::{create_dir_all, read_to_string, remove_file, set_permissions, write};
     use tokio::time::sleep;
 
     async fn executable(name: &str, script: &str) -> PathBuf {
@@ -245,21 +329,109 @@ mod test {
 
         service.restart().await.unwrap();
         assert!(service.is_running());
-        let first = service.running.as_ref().unwrap().pid;
-        for _ in 0..50 {
-            if read_to_string(&out).await.is_ok_and(|s| s == "bar\n") {
+        wait_for(&out, "bar\n").await;
+
+        // A restart starts it again, with the environment file read again
+        remove_file(&out).await.expect("remove_file");
+        write(path("/tmp/env"), "FOO=baz\n").await.expect("write");
+        service.restart().await.unwrap();
+        assert!(service.is_running());
+        wait_for(&out, "baz\n").await;
+
+        service.stop().await.unwrap();
+        assert!(!service.is_running());
+    }
+
+    async fn wait_for(file: &Path, contents: &str) {
+        for _ in 0..100 {
+            if read_to_string(file).await.is_ok_and(|s| s == contents) {
+                return;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(read_to_string(file).await.unwrap(), contents);
+    }
+
+    async fn runs(file: &Path) -> usize {
+        read_to_string(file)
+            .await
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn restart_on_failure() {
+        let _h = testing::start();
+
+        let count = path("/tmp/count");
+        create_dir_all(count.parent().unwrap())
+            .await
+            .expect("create_dir_all");
+        let script = format!("#!/bin/sh\necho run >> {}\nexit 1\n", count.display());
+        let exe = executable("failing", &script).await;
+
+        // Without the option a failure is left as it is
+        let mut service = ChildService::new(&exe);
+        service.restart().await.unwrap();
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(runs(&count).await, 1);
+        assert!(!service.is_running());
+
+        // With it, restarted until the start limit
+        remove_file(&count).await.expect("remove_file");
+        let mut service = ChildService::new(&exe).restart_on_failure();
+        service.restart().await.unwrap();
+        for _ in 0..100 {
+            if !service.is_running() {
                 break;
             }
             sleep(Duration::from_millis(20)).await;
         }
-        assert_eq!(read_to_string(&out).await.unwrap(), "bar\n");
+        assert!(!service.is_running());
+        assert_eq!(runs(&count).await, START_LIMIT_BURST);
+        service.stop().await.unwrap();
+    }
 
+    #[tokio::test]
+    async fn clean_exit_not_restarted() {
+        let _h = testing::start();
+
+        let count = path("/tmp/count");
+        create_dir_all(count.parent().unwrap())
+            .await
+            .expect("create_dir_all");
+        let script = format!("#!/bin/sh\necho run >> {}\nexit 0\n", count.display());
+        let exe = executable("clean", &script).await;
+
+        let mut service = ChildService::new(&exe).restart_on_failure();
         service.restart().await.unwrap();
-        assert!(service.is_running());
-        assert_ne!(service.running.as_ref().unwrap().pid, first);
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(runs(&count).await, 1);
+        assert!(!service.is_running());
+    }
 
+    #[tokio::test]
+    async fn stop_ends_restarts() {
+        let _h = testing::start();
+
+        let count = path("/tmp/count");
+        create_dir_all(count.parent().unwrap())
+            .await
+            .expect("create_dir_all");
+        let script = format!(
+            "#!/bin/sh\necho run >> {}\nsleep 0.05\nexit 1\n",
+            count.display()
+        );
+        let exe = executable("flaky", &script).await;
+
+        let mut service = ChildService::new(&exe).restart_on_failure();
+        service.restart().await.unwrap();
+        sleep(Duration::from_millis(30)).await;
         service.stop().await.unwrap();
         assert!(!service.is_running());
+        let after_stop = runs(&count).await;
+        sleep(Duration::from_millis(300)).await;
+        assert_eq!(runs(&count).await, after_stop);
     }
 
     #[tokio::test]
