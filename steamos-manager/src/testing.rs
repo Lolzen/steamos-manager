@@ -20,11 +20,10 @@ use tracing::subscriber::set_global_default;
 use tracing::{debug, error};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
-use zbus::Address;
 use zbus::address::transport::{Transport, UnixSocket};
 use zbus::connection::{Builder, Connection};
 use zbus::object_server::Interface;
-use zbus::zvariant::ObjectPath;
+use zbus::{Address, ObjectPath};
 use zbus_xml::{Method, Node, Property, Signal};
 
 use crate::gpu::{GpuPerformanceLevelDriver, GpuPowerProfileDriver};
@@ -180,7 +179,7 @@ impl MockDBus {
             .ok_or(anyhow!("Failed to read address"))?;
 
         let address = Address::from_str(address.trim_end())?;
-        let connection = Builder::address(address.clone())?.build().await?;
+        let connection = Builder::address(address.clone()).build().await?;
 
         Ok(MockDBus {
             connection,
@@ -268,7 +267,7 @@ impl TestHandle {
 
     pub async fn new_connection(&self) -> Result<Connection> {
         Ok(
-            Builder::address(self.dbus_address().await.ok_or(anyhow!("No address"))?)?
+            Builder::address(self.dbus_address().await.ok_or(anyhow!("No address"))?)
                 .build()
                 .await?,
         )

@@ -16,8 +16,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{self, Fd};
-use zbus::{Connection, fdo, interface, proxy};
+use zbus::{Connection, Fd, OwnedObjectPath, Variant, fdo, interface, proxy};
 
 use crate::cec::{HdmiCecHwController, cec_hw_controller};
 use crate::daemon::root::{Command, RootCommand};
@@ -342,7 +341,7 @@ impl SteamOSManager {
         }
     }
 
-    async fn update_bios(&mut self) -> fdo::Result<zvariant::OwnedObjectPath> {
+    async fn update_bios(&mut self) -> fdo::Result<OwnedObjectPath> {
         // Update the bios as needed
         let config = platform_config().await.map_err(to_zbus_fdo_error)?;
         let Some(config) = config
@@ -358,7 +357,7 @@ impl SteamOSManager {
             .await
     }
 
-    async fn update_dock(&mut self) -> fdo::Result<zvariant::OwnedObjectPath> {
+    async fn update_dock(&mut self) -> fdo::Result<OwnedObjectPath> {
         // Update the dock firmware as needed
         let config = platform_config().await.map_err(to_zbus_fdo_error)?;
         let Some(config) = config
@@ -374,7 +373,7 @@ impl SteamOSManager {
             .await
     }
 
-    async fn trim_devices(&mut self) -> fdo::Result<zvariant::OwnedObjectPath> {
+    async fn trim_devices(&mut self) -> fdo::Result<OwnedObjectPath> {
         // Run steamos-trim-devices script
         let config = platform_config().await.map_err(to_zbus_fdo_error)?;
         let Some(config) = config.as_ref().and_then(|config| config.storage.as_ref()) else {
@@ -396,7 +395,7 @@ impl SteamOSManager {
         device: &str,
         label: &str,
         validate: bool,
-    ) -> fdo::Result<zvariant::OwnedObjectPath> {
+    ) -> fdo::Result<OwnedObjectPath> {
         let config = platform_config().await.map_err(to_zbus_fdo_error)?;
         let Some(config) = config.as_ref().and_then(|config| config.storage.as_ref()) else {
             return Err(fdo::Error::NotSupported(String::from(
@@ -611,7 +610,7 @@ impl SteamOSManager {
     async fn set_wifi_debug_mode(
         &mut self,
         mode: u32,
-        options: HashMap<&str, zvariant::Value<'_>>,
+        options: HashMap<&str, Variant<'_>>,
         #[zbus(signal_emitter)] ctx: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         // Set the wifi debug mode to mode, using an int for flexibility going forward but only
@@ -626,10 +625,7 @@ impl SteamOSManager {
             return Ok(());
         }
 
-        let buffer_size = match options
-            .get("buffer_size")
-            .map(zbus::zvariant::Value::downcast_ref)
-        {
+        let buffer_size = match options.get("buffer_size").map(Variant::downcast_ref) {
             Some(Ok(v)) => v,
             None => 20000,
             Some(Err(e)) => return Err(fdo::Error::InvalidArgs(e.to_string())),

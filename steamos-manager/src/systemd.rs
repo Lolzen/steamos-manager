@@ -10,8 +10,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use strum::{Display, EnumString};
 use tokio_stream::StreamExt;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath};
-use zbus::{self, Connection};
+use zbus::{self, Connection, ObjectPath, OwnedObjectPath};
 
 #[zbus::proxy(
     interface = "org.freedesktop.systemd1.Unit",
@@ -158,7 +157,7 @@ impl<'dbus> SystemdUnit<'dbus> {
         match manager.load_unit(name).await {
             Ok(path) => {
                 let unit = SystemdUnitProxy::builder(connection)
-                    .path(path)?
+                    .path(path)
                     .build()
                     .await?;
                 let load_state = unit.load_state().await?;
@@ -180,7 +179,7 @@ impl<'dbus> SystemdUnit<'dbus> {
         let manager = SystemdManagerProxy::new(connection).await?;
         Ok(SystemdUnit {
             proxy: SystemdUnitProxy::builder(connection)
-                .path(path)?
+                .path(path)
                 .build()
                 .await?,
             manager,
@@ -296,7 +295,6 @@ pub mod test {
     use std::time::Duration;
     use tokio::time::sleep;
     use zbus::object_server::SignalEmitter;
-    use zbus::zvariant::ObjectPath;
     use zbus::{ObjectServer, fdo};
 
     #[test]

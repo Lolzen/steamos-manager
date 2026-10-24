@@ -31,7 +31,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
 use xdg::BaseDirectories;
 use zbus::fdo::{IntrospectableProxy, PropertiesProxy};
-use zbus::{Connection, zvariant};
+use zbus::{Connection, Variant};
 use zbus_xml::Node;
 
 #[derive(Parser)]
@@ -433,8 +433,8 @@ enum Commands {
 
 async fn get_all_properties(conn: &Connection) -> Result<()> {
     let proxy = IntrospectableProxy::builder(conn)
-        .destination("com.steampowered.SteamOSManager1")?
-        .path("/com/steampowered/SteamOSManager1")?
+        .destination("com.steampowered.SteamOSManager1")
+        .path("/com/steampowered/SteamOSManager1")
         .build()
         .await?;
     let introspection = proxy.introspect().await?;
@@ -675,10 +675,10 @@ async fn main() -> Result<()> {
         }
         Commands::SetWifiDebugMode { mode, buffer } => {
             let proxy = WifiDebug1Proxy::new(&conn).await?;
-            let mut options = HashMap::<&str, &zvariant::Value<'_>>::new();
+            let mut options = HashMap::<&str, &Variant<'_>>::new();
             let buffer_size;
             if let Some(size) = buffer {
-                buffer_size = Some(zvariant::Value::U32(size));
+                buffer_size = Some(Variant::U32(size));
                 options.insert("buffer_size", buffer_size.as_ref().unwrap());
             }
             proxy.set_wifi_debug_mode(mode as u32, options).await?;

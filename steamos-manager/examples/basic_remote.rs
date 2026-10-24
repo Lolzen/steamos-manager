@@ -45,12 +45,12 @@ impl BatteryChargeLimit1 {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _connection = Builder::system()?
-        .name("com.steampowered.ExampleRemote")?
+    let _connection = Builder::system()
+        .name("com.steampowered.ExampleRemote")
         .serve_at(
             "/com/steampowered/ExampleRemote",
             BatteryChargeLimit1 { limit: 10 },
-        )?
+        )
         .build()
         .await?;
     tokio::signal::ctrl_c().await?;

@@ -623,8 +623,8 @@ impl ToTokens for BaseInterface {
 
                     let object_server = session.object_server();
                     let proxy = #proxy_name::builder(&system)
-                        .path(path)?
-                        .destination(destination)?
+                        .path(path)
+                        .destination(destination)
                         .build()
                         .await?;
                     #(let mut #receivers = proxy.#receivers().await;)*
@@ -865,8 +865,8 @@ impl ToTokens for BaseInterface {
 
                     let object_server = self.session.object_server();
                     let proxy = #proxy_name::builder(&self.system)
-                        .path(self.path.clone())?
-                        .destination(self.destination.clone())?
+                        .path(self.path.clone())
+                        .destination(self.destination.clone())
                         .build()
                         .await?;
                     #register

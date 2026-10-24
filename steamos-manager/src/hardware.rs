@@ -545,8 +545,7 @@ pub mod test {
     use std::time::Duration;
     use tokio::fs::{create_dir_all, read_to_string, write};
     use tokio::time::sleep;
-    use zbus::fdo;
-    use zbus::zvariant::{ObjectPath, OwnedObjectPath};
+    use zbus::{ObjectPath, OwnedObjectPath, fdo};
 
     const STEAMDECK_HWMON: &str = "hwmon3";
 

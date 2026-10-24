@@ -7,10 +7,10 @@ repository = "https://gitlab.steamos.cloud/holo/steamos-manager/"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-cecd-proxy = { version = "0.3" }
+cecd-proxy = { version = "0.4" }
 clap = { version = "4.5", default-features = false, features = ["derive", "help", "std", "usage"] }
 config = { version = "0.15", default-features = false, features = ["async", "ini", "toml"] }
-gio = "0.21"
+gio = "0.22"
 inotify = { version = "0.11", default-features = false, features = ["stream"] }
 input-linux = "0.7"
 itertools = "0.15"
@@ -25,7 +25,7 @@ speech-dispatcher = "0.16"
 steamos-manager-macros = { path = "../steamos-manager-macros" }
 steamos-manager-proxy = { path = "../steamos-manager-proxy" }
 strum = { version = "0.28", features = ["derive"] }
-sysinfo = "0.38"
+sysinfo = "0.39"
 tempfile = "3"
 tokio = { version = "1", default-features = false, features = ["fs", "io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = { version = "0.1", default-features = false }
@@ -35,5 +35,5 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 udev = { version = "^0.9.3", features = ["send", "sync"] }
 xdg = "3.0"
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-zbus_xml = "5"
+zbus = { version = "6", features = ["tokio"] }
+zbus_xml = "6"

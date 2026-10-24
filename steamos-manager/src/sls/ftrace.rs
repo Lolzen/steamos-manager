@@ -7,7 +7,7 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tracing::{error, info};
-use zbus::zvariant;
+use zbus::Variant;
 
 use crate::{Service, get_appid, path, read_comm, system_connection};
 
@@ -17,11 +17,7 @@ use crate::{Service, get_appid, path, read_comm, system_connection};
     default_path = "/com/steampowered/SteamOSLogSubmitter/helpers/Trace"
 )]
 trait TraceHelper {
-    async fn log_event(
-        &self,
-        trace: &str,
-        data: HashMap<&str, zvariant::Value<'_>>,
-    ) -> zbus::Result<()>;
+    async fn log_event(&self, trace: &str, data: HashMap<&str, Variant<'_>>) -> zbus::Result<()>;
 }
 
 pub struct Ftrace
@@ -75,16 +71,16 @@ impl Ftrace {
         path("/sys/kernel/tracing/instances/steamos-log-submitter")
     }
 
-    async fn handle_pid(data: &mut HashMap<&str, zvariant::Value<'_>>, pid: u32) -> Result<()> {
+    async fn handle_pid(data: &mut HashMap<&str, Variant<'_>>, pid: u32) -> Result<()> {
         if let Ok(comm) = read_comm(pid) {
             info!("├─ comm: {}", comm);
-            data.insert("comm", zvariant::Value::new(comm));
+            data.insert("comm", Variant::new(comm));
         } else {
             info!("├─ comm not found");
         }
         if let Ok(Some(appid)) = get_appid(pid) {
             info!("└─ appid: {}", appid);
-            data.insert("appid", zvariant::Value::new(appid));
+            data.insert("appid", Variant::new(appid));
         } else {
             info!("└─ appid not found");
         }
@@ -136,19 +132,15 @@ mod test {
     use nix::unistd;
     use tokio::fs::{create_dir_all, read_to_string, try_exists, write};
     use tokio::sync::mpsc::{UnboundedSender, error, unbounded_channel};
-    use zbus::fdo;
+    use zbus::{OwnedVariant, fdo};
 
     struct MockTrace {
-        traces: UnboundedSender<(String, HashMap<String, zvariant::OwnedValue>)>,
+        traces: UnboundedSender<(String, HashMap<String, OwnedVariant>)>,
     }
 
     #[zbus::interface(name = "com.steampowered.SteamOSLogSubmitter.Trace")]
     impl MockTrace {
-        fn log_event(
-            &mut self,
-            trace: &str,
-            data: HashMap<&str, zvariant::Value<'_>>,
-        ) -> fdo::Result<()> {
+        fn log_event(&mut self, trace: &str, data: HashMap<&str, Variant<'_>>) -> fdo::Result<()> {
             let _ = self.traces.send((
                 String::from(trace),
                 HashMap::from_iter(
@@ -190,30 +182,18 @@ mod test {
 
         let mut map = HashMap::new();
         assert!(Ftrace::handle_pid(&mut map, 1234).await.is_ok());
-        assert_eq!(
-            *map.get("comm").expect("comm"),
-            zvariant::Value::new("ftrace")
-        );
-        assert_eq!(
-            *map.get("appid").expect("appid"),
-            zvariant::Value::new(5678_u64)
-        );
+        assert_eq!(*map.get("comm").expect("comm"), Variant::new("ftrace"));
+        assert_eq!(*map.get("appid").expect("appid"), Variant::new(5678_u64));
 
         let mut map = HashMap::new();
         assert!(Ftrace::handle_pid(&mut map, 1235).await.is_ok());
-        assert_eq!(
-            *map.get("comm").expect("comm"),
-            zvariant::Value::new("ftrace")
-        );
+        assert_eq!(*map.get("comm").expect("comm"), Variant::new("ftrace"));
         assert!(!map.contains_key("appid"));
 
         let mut map = HashMap::new();
         assert!(Ftrace::handle_pid(&mut map, 1236).await.is_ok());
         assert!(!map.contains_key("comm"));
-        assert_eq!(
-            *map.get("appid").expect("appid"),
-            zvariant::Value::new(5678_u64)
-        );
+        assert_eq!(*map.get("appid").expect("appid"), Variant::new(5678_u64));
     }
 
     #[tokio::test]

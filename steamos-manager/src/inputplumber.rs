@@ -9,11 +9,10 @@ use anyhow::Result;
 use tokio::spawn;
 use tokio_stream::StreamExt;
 use tracing::{debug, info};
-use zbus::Connection;
 use zbus::fdo::{InterfacesAdded, ObjectManagerProxy};
 use zbus::names::OwnedInterfaceName;
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::ObjectPath;
+use zbus::{Connection, ObjectPath};
 
 use crate::hardware::{InputPlumberTargetDevice, device_config};
 use crate::{Service, system_connection};
@@ -83,7 +82,7 @@ impl DeckService {
         }
 
         let target = TargetProxy::builder(&self.connection)
-            .path(targets[0].as_str())?
+            .path(targets[0].as_str())
             .build()
             .await?;
         Ok(target.device_type().await? == InputPlumberTargetDevice::DeckUhid.as_ref())
@@ -98,7 +97,7 @@ impl DeckService {
         }
         let proxy = CompositeDeviceProxy::builder(&self.connection)
             .cache_properties(CacheProperties::No)
-            .path(path)?
+            .path(path)
             .build()
             .await?;
         if !self.is_deck(&proxy).await? {

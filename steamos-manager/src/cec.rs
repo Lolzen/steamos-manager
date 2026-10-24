@@ -413,14 +413,14 @@ impl CecdService {
 
             // Reuse the old device if present
             if let Some(old_device) = &self.device
-                && *old_device.inner().path() == *path
+                && *old_device.inner().path() == **path
             {
                 return Ok(());
             }
 
             device = Some(
                 CecDevice1Proxy::builder(self.object_manager.inner().connection())
-                    .path(path)?
+                    .path(path)
                     .build()
                     .await?,
             );
@@ -465,7 +465,7 @@ impl Service for CecdService {
                 select! {
                     Some(_) = pac_stream.next() => self.reconfigure().await?,
                     Some(signal) = device_removed.next() => if let Ok(args) = signal.args() {
-                        if &args.object_path != device.inner().path() {
+                        if *args.object_path != **device.inner().path() {
                             continue;
                         }
                         if !args.interfaces

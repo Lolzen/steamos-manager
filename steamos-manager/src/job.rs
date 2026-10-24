@@ -22,7 +22,7 @@ use tokio_stream::StreamExt;
 use tracing::error;
 use zbus::fdo::{self, IntrospectableProxy};
 use zbus::object_server::{Interface, InterfaceRef, SignalEmitter};
-use zbus::{Connection, interface, zvariant};
+use zbus::{Connection, ObjectPath, OwnedObjectPath, interface};
 use zbus_xml::Node;
 
 use crate::Service;
@@ -36,7 +36,7 @@ pub struct JobManager {
     // keeps a handle to the zbus connection to expose the name over the bus.
     connection: Connection,
     jm_iface: InterfaceRef<JobManagerInterface>,
-    mirrored_jobs: HashMap<String, zvariant::OwnedObjectPath>,
+    mirrored_jobs: HashMap<String, OwnedObjectPath>,
     next_job: u32,
 }
 
@@ -63,15 +63,15 @@ pub enum JobManagerCommand {
     MirrorConnection(Connection),
     MirrorJob {
         connection: Connection,
-        path: zvariant::OwnedObjectPath,
-        reply: oneshot::Sender<fdo::Result<zvariant::OwnedObjectPath>>,
+        path: OwnedObjectPath,
+        reply: oneshot::Sender<fdo::Result<OwnedObjectPath>>,
     },
     #[allow(unused)]
     RunProcess {
         executable: String,
         args: Vec<OsString>,
         operation_name: String,
-        reply: oneshot::Sender<fdo::Result<zvariant::OwnedObjectPath>>,
+        reply: oneshot::Sender<fdo::Result<OwnedObjectPath>>,
     },
 }
 
@@ -93,7 +93,7 @@ impl JobManager {
         })
     }
 
-    async fn add_job<J: Interface>(&mut self, job: J) -> fdo::Result<zvariant::OwnedObjectPath> {
+    async fn add_job<J: Interface>(&mut self, job: J) -> fdo::Result<OwnedObjectPath> {
         let path = format!("{}/{}", JOB_PREFIX, self.next_job);
         self.next_job += 1;
         self.connection
@@ -101,7 +101,7 @@ impl JobManager {
             .at(path.as_str(), job)
             .await?;
 
-        let object_path = zvariant::OwnedObjectPath::try_from(path).map_err(to_zbus_fdo_error)?;
+        let object_path = OwnedObjectPath::try_from(path).map_err(to_zbus_fdo_error)?;
         JobManagerInterface::job_started(self.jm_iface.signal_emitter(), object_path.as_ref())
             .await?;
         Ok(object_path)
@@ -112,7 +112,7 @@ impl JobManager {
         executable: impl AsRef<OsStr>,
         args: &[impl AsRef<OsStr>],
         operation_name: &str,
-    ) -> fdo::Result<zvariant::OwnedObjectPath> {
+    ) -> fdo::Result<OwnedObjectPath> {
         // Run the given executable and give back an object path
         let job = Job::spawn(executable, args)
             .await
@@ -126,9 +126,9 @@ impl JobManager {
         &mut self,
         connection: &Connection,
         path: P,
-    ) -> fdo::Result<zvariant::OwnedObjectPath>
+    ) -> fdo::Result<OwnedObjectPath>
     where
-        P: TryInto<zvariant::ObjectPath<'a>>,
+        P: TryInto<ObjectPath<'a>>,
         P::Error: Into<zbus::Error>,
     {
         let path = path.try_into().map_err(Into::into)?.into_owned();
@@ -138,8 +138,8 @@ impl JobManager {
         }
 
         let proxy = Job1Proxy::builder(connection)
-            .destination("com.steampowered.SteamOSManager1")?
-            .path(path)?
+            .destination("com.steampowered.SteamOSManager1")
+            .path(path)
             .build()
             .await?;
         let job = MirroredJob { job: proxy };
@@ -151,8 +151,8 @@ impl JobManager {
 
     pub async fn mirror_connection(&mut self, connection: &Connection) -> fdo::Result<()> {
         let proxy = IntrospectableProxy::builder(connection)
-            .destination("com.steampowered.SteamOSManager1")?
-            .path(JOB_PREFIX)?
+            .destination("com.steampowered.SteamOSManager1")
+            .path(JOB_PREFIX)
             .build()
             .await?;
         let introspection = proxy.introspect().await?;
@@ -171,10 +171,7 @@ impl JobManager {
 #[interface(name = "com.steampowered.SteamOSManager1.JobManager1")]
 impl JobManagerInterface {
     #[zbus(signal)]
-    async fn job_started(
-        signal_ctxt: &SignalEmitter<'_>,
-        job: zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    async fn job_started(signal_ctxt: &SignalEmitter<'_>, job: ObjectPath<'_>) -> zbus::Result<()>;
 }
 
 impl Job {
@@ -389,6 +386,7 @@ pub(crate) mod test {
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
     use tokio::time::sleep;
+    use zbus::Connection;
     use zbus::connection::Builder;
     use zbus::names::BusName;
 
@@ -396,20 +394,16 @@ pub(crate) mod test {
     async fn test_job_emitted() {
         let _h = testing::start();
 
-        let connection = Builder::session()
-            .expect("session")
-            .build()
-            .await
-            .expect("connection");
+        let connection = Connection::session().await.expect("session");
         let sender = connection.unique_name().unwrap().to_owned();
         let mut pm = JobManager::new(connection).await.expect("pm");
 
         let (tx, rx) = oneshot::channel::<()>();
 
         let job = tokio::spawn(async move {
-            let connection = Builder::session()?.build().await?;
+            let connection = Connection::session().await?;
             let jm = JobManager1Proxy::builder(&connection)
-                .destination(sender)?
+                .destination(sender)
                 .build()
                 .await?;
             let mut spawned = jm.receive_job_started().await?;
@@ -537,7 +531,7 @@ pub(crate) mod test {
         let (fin_tx, fin_rx) = oneshot::channel();
 
         let job: JoinHandle<Result<()>> = tokio::spawn(async move {
-            let connection = Builder::address(address)?.build().await?;
+            let connection = Builder::address(address).build().await?;
             let mut jm = JobManager::new(connection.clone()).await?;
 
             sleep(Duration::from_millis(10)).await;
@@ -547,39 +541,69 @@ pub(crate) mod test {
                 .await?;
             let name = connection.unique_name().unwrap().clone();
             let proxy = Job1Proxy::builder(&connection)
-                .destination(BusName::Unique(name.into()))?
-                .path(path)?
+                .destination(BusName::Unique(name.into()))
+                .path(path)
                 .build()
                 .await?;
 
             match proxy.pause().await.unwrap_err() {
                 zbus::Error::MethodError(_, Some(text), _) => tx.send(text).await?,
-                _ => bail!("pause"),
+                zbus::Error::FDO(err) => {
+                    let fdo::Error::Failed(text) = *err else {
+                        dbg!(err);
+                        bail!("pause")
+                    };
+                    tx.send(text).await?
+                }
+                e => {
+                    dbg!(e);
+                    bail!("pause")
+                }
             };
             match proxy.resume().await.unwrap_err() {
                 zbus::Error::MethodError(_, Some(text), _) => tx.send(text).await?,
-                _ => bail!("resume"),
+                zbus::Error::FDO(err) => {
+                    let fdo::Error::Failed(text) = *err else {
+                        dbg!(err);
+                        bail!("resume")
+                    };
+                    tx.send(text).await?
+                }
+                e => {
+                    dbg!(e);
+                    bail!("resume")
+                }
             };
             match proxy.cancel(false).await.unwrap_err() {
                 zbus::Error::MethodError(_, Some(text), _) => tx.send(text).await?,
-                _ => bail!("cancel"),
+                zbus::Error::FDO(err) => {
+                    let fdo::Error::Failed(text) = *err else {
+                        dbg!(err);
+                        bail!("cancel")
+                    };
+                    tx.send(text).await?
+                }
+                e => {
+                    dbg!(e);
+                    bail!("cancel")
+                }
             };
 
             Ok(fin_rx.await?)
         });
 
-        assert_eq!(
-            rx.recv().await.expect("rx"),
-            "org.freedesktop.DBus.Error.Failed: pause"
-        );
-        assert_eq!(
-            rx.recv().await.expect("rx"),
-            "org.freedesktop.DBus.Error.Failed: resume"
-        );
-        assert_eq!(
-            rx.recv().await.expect("rx"),
-            "org.freedesktop.DBus.Error.Failed: cancel"
-        );
+        assert!(matches!(
+            rx.recv().await.expect("rx").as_ref(),
+            "org.freedesktop.DBus.Error.Failed: pause" | "pause"
+        ));
+        assert!(matches!(
+            rx.recv().await.expect("rx").as_ref(),
+            "org.freedesktop.DBus.Error.Failed: resume" | "resume"
+        ));
+        assert!(matches!(
+            rx.recv().await.expect("rx").as_ref(),
+            "org.freedesktop.DBus.Error.Failed: cancel" | "cancel"
+        ));
 
         fin_tx.send(()).expect("fin");
         job.await.expect("job").expect("job2");

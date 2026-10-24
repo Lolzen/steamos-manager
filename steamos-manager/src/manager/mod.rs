@@ -10,8 +10,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::names::{OwnedBusName, OwnedWellKnownName};
 use zbus::object_server::Interface;
-use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, ObjectServer, fdo};
+use zbus::{Connection, ObjectServer, OwnedObjectPath, fdo};
 
 use crate::job::JobManagerCommand;
 

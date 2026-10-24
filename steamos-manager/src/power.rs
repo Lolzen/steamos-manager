@@ -31,8 +31,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, warn};
 use zbus::names::OwnedBusName;
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, ObjectServer, fdo};
+use zbus::{Connection, ObjectServer, OwnedObjectPath, fdo};
 
 use crate::daemon::is_root;
 use crate::error::{to_zbus_error, to_zbus_fdo_error};
@@ -730,8 +729,8 @@ impl<'proxy> TdpLimitManager for RemoteInterfaceLimitManager<'proxy> {
         self.proxy = if let Some((destination, path)) = proxy {
             Some(
                 TdpLimit1Proxy::builder(&self.connection)
-                    .path(path)?
-                    .destination(destination)?
+                    .path(path)
+                    .destination(destination)
                     .build()
                     .await?,
             )

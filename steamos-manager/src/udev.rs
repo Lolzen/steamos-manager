@@ -6,7 +6,7 @@
  */
 
 use anyhow::{Result, anyhow, bail, ensure};
-use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::Interest;
@@ -91,7 +91,7 @@ impl UdevMonitor {
     pub async fn init(connection: &Connection) -> Result<UdevMonitor> {
         let object_server = connection.object_server();
         ensure!(
-            object_server.at(PATH, UdevDbusObject {}).await?,
+            object_server.at(PATH, UdevDbusObject {}).await?.is_none(),
             "Could not register UdevEvents1"
         );
         let udev_object: InterfaceRef<UdevDbusObject> = object_server.interface(PATH).await?;
@@ -119,7 +119,12 @@ async fn run_udev(tx: UnboundedSender<UdevEvent>, mut shutdown_rx: Receiver<()>)
     let usb_monitor = MonitorBuilder::new()?
         .match_subsystem_devtype("usb", "usb_interface")?
         .listen()?;
-    let fd = AsyncFd::new(usb_monitor.as_fd())?;
+    let fd = unsafe {
+        AsyncFd::register_with_interest(
+            usb_monitor.as_raw_fd(),
+            Interest::READABLE | Interest::ERROR,
+        )?
+    };
     let mut iter = usb_monitor.iter();
     loop {
         select! {
@@ -148,7 +153,12 @@ where
         .match_subsystem(subsystem)?
         .listen()?;
     let handle = spawn(async move {
-        let fd = AsyncFd::new(monitor.as_fd())?;
+        let fd = unsafe {
+            AsyncFd::register_with_interest(
+                monitor.as_raw_fd(),
+                Interest::READABLE | Interest::ERROR,
+            )?
+        };
         let mut iter = monitor.iter();
         loop {
             select! {

@@ -27,8 +27,7 @@ use zbus::message::Header;
 use zbus::names::{BusName, OwnedBusName, UniqueName};
 use zbus::object_server::{Interface, SignalEmitter};
 use zbus::proxy::{Builder, CacheProperties, PropertyStream};
-use zbus::zvariant::{Fd, OwnedObjectPath};
-use zbus::{Connection, ObjectServer, Proxy, zvariant};
+use zbus::{Connection, Fd, ObjectServer, OwnedObjectPath, Proxy, Variant};
 
 use steamos_manager_macros::{RemoteManager, interface, remote};
 
@@ -1482,7 +1481,7 @@ impl WifiDebug1 {
     async fn set_wifi_debug_mode(
         &self,
         mode: u32,
-        options: HashMap<&str, zvariant::Value<'_>>,
+        options: HashMap<&str, Variant<'_>>,
         #[zbus(signal_emitter)] ctx: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         let _: () = method!(self, "SetWifiDebugMode", mode, options)?;
@@ -1565,7 +1564,7 @@ async fn register<I: RemoteInterface + Interface>(
         return Ok(false);
     }
 
-    Ok(object_server.at(MANAGER_PATH, remote).await?)
+    Ok(object_server.at(MANAGER_PATH, remote).await?.is_none())
 }
 
 impl Service for SignalRelayService {
@@ -1885,9 +1884,9 @@ pub(crate) async fn create_interfaces(
     let session = session_connection().await?;
     let system = system_connection().await?;
     let proxy = Builder::<Proxy>::new(&system)
-        .destination("com.steampowered.SteamOSManager1")?
-        .path("/com/steampowered/SteamOSManager1")?
-        .interface("com.steampowered.SteamOSManager1.RootManager")?
+        .destination("com.steampowered.SteamOSManager1")
+        .path("/com/steampowered/SteamOSManager1")
+        .interface("com.steampowered.SteamOSManager1.RootManager")
         .cache_properties(CacheProperties::No)
         .build()
         .await?;
@@ -2482,7 +2481,6 @@ mod test {
                     .ok_or(anyhow!("no unique name"))
                     .unwrap(),
             )
-            .unwrap()
             .cache_properties(CacheProperties::No)
             .build()
             .await
@@ -3162,7 +3160,7 @@ mod test {
                 test.connection
                     .unique_name()
                     .ok_or(anyhow!("no unique name"))?,
-            )?
+            )
             .build()
             .await?;
 
@@ -3199,7 +3197,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3225,7 +3222,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3248,7 +3244,6 @@ mod test {
 
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3276,7 +3271,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3394,7 +3388,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3423,7 +3416,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3455,7 +3447,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3479,7 +3470,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3533,7 +3523,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3588,7 +3577,6 @@ mod test {
 
         let proxy = BatteryChargeLimit1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3654,7 +3642,6 @@ mod test {
         let new_conn = test.handle.new_connection().await.unwrap();
         let proxy = RemoteInterface1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3704,7 +3691,6 @@ mod test {
 
         let proxy = TdpLimit1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3758,13 +3744,11 @@ mod test {
         let unique_name = test.connection.unique_name().unwrap();
         let proxy = TdpLimit1Proxy::builder(&new_conn)
             .destination(unique_name)
-            .unwrap()
             .build()
             .await
             .unwrap();
         let low_power_proxy = LowPowerMode1Proxy::builder(&new_conn)
             .destination(unique_name)
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -3815,7 +3799,6 @@ mod test {
 
         let proxy = UpdateBios1Proxy::builder(&new_conn)
             .destination(test.connection.unique_name().unwrap())
-            .unwrap()
             .build()
             .await
             .unwrap();
