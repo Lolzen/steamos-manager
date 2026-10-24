@@ -9,7 +9,8 @@ test-x86_64:
   tags:
     - x86_64-linux-kvm-docker
   script:
-    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher cargo-tarpaulin
+    - pacman -Syu --noconfirm --needed dbus rustup gsettings-desktop-schemas clang speech-dispatcher cargo-tarpaulin
+    - rustup default 1.97.1
     - dbus-run-session cargo tarpaulin --out xml --engine llvm
   artifacts:
     reports:
@@ -23,7 +24,8 @@ test-aarch64:
   tags:
     - aarch64-linux-docker
   script:
-    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
+    - pacman -Syu --noconfirm --needed dbus rustup gsettings-desktop-schemas clang speech-dispatcher
+    - rustup default 1.97.1
     - dbus-run-session cargo test
 
 workflow:
@@ -37,7 +39,8 @@ fmt:
   tags:
     - x86_64-linux-kvm-docker
   script:
-    - pacman -Syu --noconfirm --needed rust
+    - pacman -Syu --noconfirm --needed rustup
+    - rustup default 1.97.1
     - cargo fmt --check
 
 clippy-x86_64:
@@ -45,7 +48,8 @@ clippy-x86_64:
   tags:
     - x86_64-linux-kvm-docker
   script:
-    - pacman -Syu --noconfirm --needed rust clang speech-dispatcher
+    - pacman -Syu --noconfirm --needed rustup clang speech-dispatcher
+    - rustup default stable
     - cargo clippy -- -Dwarnings
     - cargo clippy --tests -- -Dwarnings
 
@@ -55,7 +59,8 @@ clippy-aarch64:
   tags:
     - aarch64-linux-docker
   script:
-    - pacman -Syu --noconfirm --needed rust clang speech-dispatcher
+    - pacman -Syu --noconfirm --needed rustup clang speech-dispatcher
+    - rustup default stable
     - cargo clippy -- -Dwarnings
     - cargo clippy --tests -- -Dwarnings
 
@@ -64,9 +69,11 @@ proxy:
   tags:
     - x86_64-linux-kvm-docker
   script:
-    - pacman -Syu --noconfirm --needed rust git zbus_xmlgen
+    - pacman -Syu --noconfirm --needed rustup git
+    - rustup default 1.97.1
+    - cargo install zbus_xmlgen@^6.0
     - cd steamos-manager-proxy/src
-    - ./update_proxy.sh
+    - PATH=$PATH:~/.cargo/bin ./update_proxy.sh
     - git status
     - git diff
     - git diff-index --quiet HEAD
@@ -76,7 +83,8 @@ build-x86_64:
   tags:
     - x86_64-linux-kvm-docker
   script:
-    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
+    - pacman -Syu --noconfirm --needed dbus rustup gsettings-desktop-schemas clang speech-dispatcher
+    - rustup default 1.97.1
     - make install DESTDIR=build
     - tar --zstd -C build -cvf build.tar.zst .
   artifacts:
@@ -89,7 +97,8 @@ build-aarch64:
   tags:
     - aarch64-linux-docker
   script:
-    - pacman -Syu --noconfirm --needed dbus rust gsettings-desktop-schemas clang speech-dispatcher
+    - pacman -Syu --noconfirm --needed dbus rustup gsettings-desktop-schemas clang speech-dispatcher
+    - rustup default 1.97.1
     - make install DESTDIR=build
     - tar --zstd -C build -cvf build.tar.zst .
   artifacts:
